@@ -8,6 +8,18 @@
  * Transport: stdio (stdout = protocol, stderr = logs)
  */
 
+// Must be first — before any imports that load pino/sonic-boom.
+// Pino writes to stdout via sonic-boom's direct fs.write(fd=1) calls,
+// bypassing process.stdout.write entirely. Patch at the fs level so
+// pino log lines are transparently redirected to stderr (fd 2).
+// The MCP protocol owns stdout exclusively; any other writes corrupt the stream.
+// Silence pino before any SDK imports. Pino reads LOG_LEVEL at logger-creation
+// time; setting it here (before clude-bot is required) suppresses all output.
+// Pino/sonic-boom writes directly to fd 1 via native fs calls, bypassing
+// process.stdout.write, and fs.write is non-configurable in Node ≥22, so
+// env-var suppression is the only reliable cross-version approach.
+process.env.LOG_LEVEL = "silent";
+
 import * as path from "path";
 import * as dotenv from "dotenv";
 dotenv.config({ path: path.join(__dirname, "..", ".env") });
