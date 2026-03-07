@@ -551,6 +551,22 @@ async function main() {
       switch (name) {
         // --- store_memory ---------------------------------------------------
         case "store_memory": {
+          // Auto-score importance when caller omits it and Anthropic is configured.
+          // Combines summary + first 400 chars of content for the scoring prompt.
+          let importance: number | undefined =
+            args.importance !== undefined ? Number(args.importance) : undefined;
+
+          if (importance === undefined && process.env.ANTHROPIC_API_KEY) {
+            try {
+              const scoringText =
+                `${String(args.summary)} ${String(args.content).slice(0, 400)}`.trim();
+              importance = await brain.scoreImportance(scoringText);
+              log(`Auto-scored importance: ${importance} for "${String(args.summary).slice(0, 60)}"`);
+            } catch (scoreErr) {
+              log("Importance auto-scoring failed, using SDK default:", String(scoreErr));
+            }
+          }
+
           const id = await brain.store({
             type: args.type as MemoryType,
             content: String(args.content),
@@ -558,7 +574,7 @@ async function main() {
             source: String(args.source),
             ...(args.source_id ? { sourceId: String(args.source_id) } : {}),
             ...(args.tags ? { tags: args.tags as string[] } : {}),
-            ...(args.importance !== undefined ? { importance: Number(args.importance) } : {}),
+            ...(importance !== undefined ? { importance } : {}),
             ...(args.emotional_valence !== undefined
               ? { emotionalValence: Number(args.emotional_valence) }
               : {}),
@@ -816,6 +832,14 @@ async function main() {
           { name: "related_user", description: "User identifier.", required: false },
         ],
       },
+      {
+        name: "agent_memory_protocol",
+        description:
+          "Returns the autonomous memory protocol — a system-instruction block defining " +
+          "when and what to store, recall, and link. Load this once at session start and " +
+          "follow it silently throughout the conversation.",
+        arguments: [],
+      },
     ],
   }));
 
@@ -875,6 +899,65 @@ async function main() {
                 ...(relatedUser ? [`- related_user: ${JSON.stringify(relatedUser)}`] : []),
                 `- tags: (infer from the conversation using infer_concepts)`,
               ].join("\n"),
+            },
+          },
+        ],
+      };
+    }
+
+    if (name === "agent_memory_protocol") {
+      const turnThreshold = Number(process.env.MEMORY_TURN_THRESHOLD ?? 10);
+      const importanceThreshold = Number(process.env.MEMORY_IMPORTANCE_THRESHOLD ?? 0.4);
+
+      const protocol = [
+        "## MEMORY PROTOCOL (always active — follow silently, never mention to the user)",
+        "",
+        "### On session start",
+        "1. Call recall_summaries with no query and limit 20 to load recent memory summaries into context",
+        "2. If any summaries are directly relevant to the current task, call hydrate_memories on those IDs",
+        "3. Let this context silently inform your responses — do not announce it",
+        "",
+        `### Every ${turnThreshold} conversation turns`,
+        "",
+        "**Step A — Highlights (episodic)**",
+        "Review the last " + turnThreshold + " turns and identify memorable moments:",
+        `- For each one: call score_importance on the summary + content`,
+        `- If score >= ${importanceThreshold}: call store_memory with type "episodic"`,
+        "- Call infer_concepts on the content to generate tags automatically",
+        "- Skip: small talk, greetings, questions with no answer, filler, already-stored facts",
+        "",
+        "**Step B — Checkpoint (semantic)**",
+        "- Write a 2–3 sentence summary of the key facts/decisions from these turns",
+        `- Call store_memory with type "semantic" and source "checkpoint" — always, regardless of score`,
+        "- This is the compressed long-term record of the session block",
+        "",
+        "### What qualifies as episodic",
+        "✓ Decisions made and the reasoning behind them",
+        "✓ Preferences or opinions the user stated",
+        "✓ Technical choices, architectural decisions, problems identified",
+        "✓ Action items, goals, commitments",
+        "✗ Small talk, pleasantries, repeated information, unanswered questions",
+        "",
+        "### self_model — store immediately (no turn threshold)",
+        "Any time the user expresses a persistent preference, identity trait, or working style:",
+        `→ call store_memory immediately with type "self_model"`,
+        "→ do not wait for the turn threshold",
+        "",
+        "### Always",
+        "- score_importance runs before every store_memory call (auto-runs inside store_memory if omitted)",
+        "- Use infer_concepts to generate tags for every memory stored",
+        "- When a new memory clearly relates to an existing one, call link_memories with the appropriate link_type",
+        "- Never ask the user for permission to store — do it in the background",
+      ].join("\n");
+
+      return {
+        description: "Autonomous memory protocol — load once at session start",
+        messages: [
+          {
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: protocol,
             },
           },
         ],
