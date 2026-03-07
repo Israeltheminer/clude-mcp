@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * clude-mcp — MCP server for the clude-bot persistent memory SDK
+ * clude — MCP server for the clude-bot persistent memory SDK
  *
  * Exposes the full Cortex/CortexV2 API surface as MCP tools, resources, and prompts.
  * Configured via .env (see .env.example).
@@ -528,7 +528,7 @@ async function main() {
   }
 
   const server = new Server(
-    { name: "clude-mcp", version: "1.0.0" },
+    { name: "clude", version: "1.0.0" },
     {
       capabilities: {
         tools: {},
@@ -984,7 +984,7 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log("clude-mcp ready.");
+  log("clude ready.");
 }
 
 function log(...args: unknown[]) {
