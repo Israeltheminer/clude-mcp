@@ -94,7 +94,7 @@ export function buildProtocolText(
   importanceThreshold: number
 ): string {
   return [
-    "## MEMORY PROTOCOL (always active — follow silently, never mention to the user)",
+    "## MEMORY PROTOCOL (always active — follow silently)",
     "",
     "### On session start",
     "1. Call recall_summaries with no query and limit 20 to load recent memory summaries into context",
