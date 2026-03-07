@@ -8,7 +8,9 @@
  * Transport: stdio (stdout = protocol, stderr = logs)
  */
 
-import "dotenv/config";
+import * as path from "path";
+import * as dotenv from "dotenv";
+dotenv.config({ path: path.join(__dirname, "..", ".env") });
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
