@@ -36,7 +36,7 @@ import {
   ReadResourceRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Cortex, type Memory, type MemorySummary, type MemoryType } from "clude-bot";
+import { Cortex, type Memory, type MemoryType } from "clude-bot";
 
 // ---------------------------------------------------------------------------
 // Config — built from environment variables at startup
@@ -58,13 +58,23 @@ function buildConfig(): ConstructorParameters<typeof Cortex>[0] {
     const voyageApiKey = process.env.VOYAGE_API_KEY;
     const openaiApiKey = process.env.OPENAI_API_KEY;
 
+    if (embeddingProvider === "voyage" && !voyageApiKey) {
+      throw new Error("EMBEDDING_PROVIDER=voyage but VOYAGE_API_KEY is not set.");
+    }
+    if (embeddingProvider === "openai" && !openaiApiKey) {
+      throw new Error("EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set.");
+    }
+
+    const embeddingKey =
+      embeddingProvider === "voyage" ? voyageApiKey : openaiApiKey;
+
     return {
       supabase: { url: supabaseUrl, serviceKey: supabaseKey },
       ...(anthropicApiKey && { anthropic: { apiKey: anthropicApiKey } }),
-      ...(embeddingProvider && {
+      ...(embeddingProvider && embeddingKey && {
         embedding: {
           provider: embeddingProvider,
-          apiKey: embeddingProvider === "voyage" ? voyageApiKey! : openaiApiKey!,
+          apiKey: embeddingKey,
         },
       }),
     };
@@ -479,12 +489,14 @@ function ok(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
 }
 
+type AnyFn = (...args: unknown[]) => unknown;
+
 function isCortexV2(brain: Cortex): brain is Cortex & {
-  exportPack: Function;
-  importPack: Function;
-  serializePack: Function;
-  serializePackMarkdown: Function;
-  parsePack: Function;
+  exportPack: AnyFn;
+  importPack: AnyFn;
+  serializePack: AnyFn;
+  serializePackMarkdown: AnyFn;
+  parsePack: AnyFn;
 } {
   return typeof (brain as any).exportPack === "function";
 }
