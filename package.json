@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "clude-bot": "^2.6.2"
+    "clude-bot": "^2.6.2",
+    "dotenv": "^17.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

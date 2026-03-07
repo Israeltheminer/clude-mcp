@@ -3,11 +3,12 @@
  * clude-mcp — MCP server for the clude-bot persistent memory SDK
  *
  * Exposes the full Cortex/CortexV2 API surface as MCP tools, resources, and prompts.
- * Configured entirely via environment variables (see .env.example).
+ * Configured via .env (see .env.example).
  *
  * Transport: stdio (stdout = protocol, stderr = logs)
  */
 
+import "dotenv/config";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
