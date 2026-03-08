@@ -38,15 +38,20 @@
  *
  * ### agent_memory_protocol
  *
- * The autonomous memory protocol. Returns a complete system-instruction block
- * that an agent should load once at session start and follow throughout the
- * conversation. This is the cornerstone of the autonomous memory design:
- * the protocol spec lives in the MCP server, not in any client config file,
- * and is served fresh on every session start.
+ * The autonomous memory protocol. Returns a complete four-phase instruction
+ * block that is lifecycle-agnostic: it works correctly whether loaded at
+ * session start, mid-conversation, after a context reset, or by a
+ * programmatic agent calling getPrompt() at any point in its execution loop.
+ *
+ * Phase 1 (Initialize)  — runs immediately on load; warms context via recall
+ * Phase 2 (Periodic)    — every N turns from load point, not from turn 0
+ * Phase 3 (Reactive)    — immediate self_model storage on identity triggers
+ * Phase 4 (Invariants)  — tagging, linking, scoring rules for every write
  *
  * Arguments: none — the server reads MEMORY_TURN_THRESHOLD and
  * MEMORY_IMPORTANCE_THRESHOLD from the environment and interpolates them
- * into the returned text.
+ * into the returned text. Changing these values takes effect on the next
+ * prompt call with no server restart required.
  *
  * See `prompts/handlers/protocol.ts` for the full protocol text.
  */
@@ -125,10 +130,10 @@ export const PROMPTS: PromptMeta[] = [
   {
     name: "agent_memory_protocol",
     description:
-      "Returns the autonomous memory protocol — a complete system-instruction " +
-      "block defining when and what to store, recall, and link. " +
-      "Load this once at session start and follow it silently throughout " +
-      "the conversation. Thresholds are read from server env vars.",
+      "Returns the autonomous memory protocol — a four-phase instruction block " +
+      "defining when and what to store, recall, and link. Lifecycle-agnostic: " +
+      "callable at session start, mid-conversation, after a context reset, or " +
+      "from programmatic agents at any point. Thresholds read from server env vars.",
     arguments: [],
   },
 ];

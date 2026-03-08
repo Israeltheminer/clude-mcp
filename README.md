@@ -124,14 +124,14 @@ Add the same `node` + `args` block to your Antigravity MCP server config.
 
 ## Autonomous memory protocol
 
-The `agent_memory_protocol` MCP prompt is the core of the system. It returns a complete instruction block that an agent follows silently for the entire session:
+The `agent_memory_protocol` MCP prompt is the core of the system. It returns a lifecycle-agnostic four-phase instruction block — callable at session start, mid-conversation, after a context reset, or from programmatic agents at any point:
 
-| When | What happens |
-|------|-------------|
-| **Session start** | `recall_summaries` warms the context (last 20 memories) |
-| **Every N turns** | Step A: score + store episodic highlights above the threshold<br>Step B: write a semantic checkpoint (always, regardless of score) |
-| **Immediately** | `self_model` memories stored on any identity/preference statement |
-| **Every write** | `infer_concepts` generates tags; `link_memories` connects related memories |
+| Phase | Trigger | What happens |
+|-------|---------|-------------|
+| **1 — Initialize** | Immediately on load | `recall_summaries` warms context; `hydrate_memories` on relevant IDs; turn counter resets to 0 |
+| **2 — Periodic** | Every N turns from load point | Step A: score + store episodic highlights; Step B: semantic checkpoint (always) |
+| **3 — Reactive** | Any identity/preference statement | `store_memory` with type `self_model` immediately |
+| **4 — Invariants** | Every memory write | `infer_concepts` for tags; `link_memories` for related memories; silent operation |
 
 To activate it globally in Claude Code, create `~/.claude/CLAUDE.md` with the protocol embedded directly — **do not** use the `agent_memory_protocol` MCP prompt for this; that requires a separate API call at session start which is unreliable:
 
