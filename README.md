@@ -258,19 +258,36 @@ Subscribe to these URIs in MCP clients that support resource polling:
 
 ---
 
-## Scheduled maintenance (cron)
+## Scheduled maintenance
 
-Set up two cron jobs to keep the memory store healthy:
+Two tasks keep the memory store healthy — run them daily, dream before decay so consolidated memories survive longer:
 
-```cron
-# Decay: run daily at 3am
-0 3 * * *   node /path/to/clude-mcp/dist/index.js --tool decay_memories
+| Task | Frequency | Why |
+|------|-----------|-----|
+| `dream` | Nightly | Consolidates episodic → semantic before decay runs |
+| `decay_memories` | Nightly (after dream) | Applies type-specific daily decay rates |
 
-# Dream: run weekly on Sunday at 4am
-0 4 * * 0   node /path/to/clude-mcp/dist/index.js --tool dream
+### Claude Code scheduled tasks (recommended)
+
+```bash
+# Dream: nightly (example — pick your own time)
+claude schedule create memory-dream --cron "0 2 * * *" \
+  "Call the dream tool on the clude MCP server to consolidate episodic memories into semantic knowledge."
+
+# Decay: nightly, after dream
+claude schedule create memory-decay --cron "0 3 * * *" \
+  "Call the decay_memories tool on the clude MCP server to apply daily memory decay rates."
 ```
 
-Or use the built-in Claude Code scheduled tasks if you set them up during installation.
+### Plain cron (alternative)
+
+```cron
+# Dream: nightly at 2am
+0 2 * * *   node /path/to/clude-mcp/dist/index.js --tool dream
+
+# Decay: nightly at 3am (after dream)
+0 3 * * *   node /path/to/clude-mcp/dist/index.js --tool decay_memories
+```
 
 ---
 
