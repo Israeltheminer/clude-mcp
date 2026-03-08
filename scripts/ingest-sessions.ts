@@ -285,34 +285,39 @@ async function main() {
       const firstUserMsg = window.find(t => t.role === "user")?.text ?? "";
       const windowSummary = `${sessionLabel}: ${firstUserMsg.slice(0, 80)}${firstUserMsg.length > 80 ? "…" : ""}`;
 
-      // ── Step A: score user turns in parallel, store episodic highlights ────
+      // ── Step A: score user turns in parallel, store the best one ─────────
+      // One episodic per window = one Voyage call. Together with the checkpoint
+      // that's exactly 2 calls/window, well within the 3 RPM free-tier limit.
       const userTurns = window.filter(t => t.role === "user");
 
-      // Score all user turns concurrently (Anthropic Haiku calls, separate limit)
+      // Score all user turns concurrently (Anthropic Haiku — separate rate limit)
       const scores = await Promise.all(
         userTurns.map(async (turn) => {
           const scoreInput = `${windowSummary} ${turn.text.slice(0, 400)}`;
           try {
             return { turn, importance: await scoreImportanceDirect(scoreInput) };
           } catch {
-            return { turn, importance: undefined };
+            return { turn, importance: undefined as number | undefined };
           }
         })
       );
 
-      for (const { turn, importance } of scores) {
-        if (importance !== undefined && importance < THRESHOLD) continue;
+      // Pick the highest-scoring turn that clears the threshold
+      const best = scores
+        .filter(s => s.importance === undefined || s.importance >= THRESHOLD)
+        .sort((a, b) => (b.importance ?? 0.5) - (a.importance ?? 0.5))[0];
 
+      if (best) {
         try {
-          const tags = brain.inferConcepts(turn.text, source, []);
-          await voyageLimiter.throttle(); // respect 3 RPM before each store
+          const tags = brain.inferConcepts(best.turn.text, source, []);
+          await voyageLimiter.throttle();
           await brain.store({
             type: "episodic",
-            content: `${sessionLabel}\n\nUser: ${turn.text}`,
+            content: `${sessionLabel}\n\nUser: ${best.turn.text}`,
             summary: windowSummary,
             source,
             tags,
-            ...(importance !== undefined ? { importance } : {}),
+            ...(best.importance !== undefined ? { importance: best.importance } : {}),
           });
           memoriesStored++;
         } catch (err: any) {
