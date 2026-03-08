@@ -12,9 +12,12 @@
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
-    "ingest": "LOG_LEVEL=silent node --require tsx/cjs scripts/ingest-sessions.ts"
+    "ingest": "LOG_LEVEL=silent node --require tsx/cjs scripts/ingest-sessions.ts",
+    "clear": "node --require tsx/cjs scripts/clear-memory.ts",
+    "rescore": "LOG_LEVEL=silent node --require tsx/cjs scripts/rescore-memories.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "clude-bot": "^2.6.2",
     "dotenv": "^16.6.1"

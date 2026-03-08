@@ -34,7 +34,8 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ override: true }); // override empty env vars pre-set by parent shell
 
 import Anthropic from "@anthropic-ai/sdk";
 import { createBrain } from "../src/brain.js";
@@ -63,13 +64,74 @@ async function scoreImportanceDirect(text: string): Promise<number> {
     max_tokens: 10,
     messages: [{
       role: "user",
-      content: `Rate how important this information is to remember long-term, on a scale from 0.0 to 1.0. Reply with a single decimal number only.\n\n${text.slice(0, 500)}`,
+      content: `Rate how important this information is to remember long-term for a developer assistant, on a scale from 0.0 to 1.0. Be extremely strict. Routine debugging, typical commands, or small talk should score 0.1-0.3. Only persistent user preferences, major architectural decisions, or critical system insights should score >0.6. Reply with a single decimal number only.\n\n${text.slice(0, 500)}`,
     }],
   });
 
   const raw = (response.content[0] as any).text?.trim() ?? "0.5";
   const score = parseFloat(raw);
   return isNaN(score) ? 0.5 : Math.min(1, Math.max(0, score));
+}
+
+async function summarizeWindowDirect(text: string): Promise<string> {
+  const client = getAnthropicClient();
+  if (!client) return "";
+
+  try {
+    const response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1000,
+      messages: [{
+        role: "user",
+        content: `Write a concise 2-3 sentence summary of the key facts, context, and decisions discussed in the following conversation turns. Focus on the actionable takeaways and what was accomplished.\n\n${text.slice(0, 4000)}`,
+      }],
+    });
+    return (response.content[0] as any).text?.trim() ?? "";
+  } catch (err) {
+    return "";
+  }
+}
+
+async function inferConceptsDirect(text: string): Promise<string[]> {
+  const client = getAnthropicClient();
+  if (!client) return [];
+
+  try {
+    const response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 50,
+      messages: [{
+        role: "user",
+        content: `Extract 2-4 broad, highly relevant categorization tags for this developer conversation. Use generic coding/memory concepts like architecture, debugging, refactoring, configuration, preferences, ui, backend, testing, etc. Return them as a comma-separated list of lowercase words. DO NOT output anything else.\n\n${text.slice(0, 2000)}`,
+      }],
+    });
+    const raw = (response.content[0] as any).text?.trim() ?? "";
+    return raw.split(',').map((s: string) => s.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')).filter(Boolean);
+  } catch (err) {
+    return [];
+  }
+}
+
+
+// ── Status line ───────────────────────────────────────────────────────────────
+// Rewrites a single terminal line with \r so progress doesn't scroll.
+
+let _statusActive = false;
+function setStatus(msg: string) {
+  const cols = (process.stdout.columns || 120) - 1;
+  process.stdout.write("\r" + msg.slice(0, cols).padEnd(cols));
+  _statusActive = true;
+}
+function clearStatus() {
+  if (_statusActive) {
+    const cols = (process.stdout.columns || 120) - 1;
+    process.stdout.write("\r" + " ".repeat(cols) + "\r");
+    _statusActive = false;
+  }
+}
+function println(msg: string) {
+  clearStatus();
+  console.log(msg);
 }
 
 // ── Rate limiter ──────────────────────────────────────────────────────────────
@@ -86,17 +148,27 @@ class RateLimiter {
     this.windowMs = windowMs;
   }
 
-  async throttle(): Promise<void> {
+  async throttle(onWait?: (waitSec: number) => void): Promise<void> {
     const now = Date.now();
-    // Evict timestamps outside the rolling window
     this.timestamps = this.timestamps.filter(t => now - t < this.windowMs);
 
     if (this.timestamps.length >= this.maxRequests) {
-      // Wait until the oldest timestamp exits the window
       const waitMs = this.windowMs - (now - this.timestamps[0]) + 10;
-      process.stdout.write(` [rate-limit: waiting ${(waitMs / 1000).toFixed(1)}s]`);
-      await new Promise(r => setTimeout(r, waitMs));
-      return this.throttle(); // re-check after waiting
+      onWait?.(Math.ceil(waitMs / 1000));
+
+      // Live countdown: update status every second
+      const endAt = Date.now() + waitMs;
+      await new Promise<void>(resolve => {
+        const tick = () => {
+          const remaining = Math.ceil((endAt - Date.now()) / 1000);
+          if (remaining <= 0) { resolve(); return; }
+          onWait?.(remaining);
+          setTimeout(tick, 1000);
+        };
+        tick();
+      });
+
+      return this.throttle(onWait); // re-check after waiting
     }
 
     this.timestamps.push(Date.now());
@@ -226,7 +298,8 @@ function sourceLabel(filePath: string): string {
 
 async function main() {
   console.log(`clude session ingestion${DRY_RUN ? " [DRY RUN]" : ""}`);
-  console.log(`window=${WINDOW}  threshold=${THRESHOLD}  limit=${LIMIT || "none"}  project=${PROJECT ?? "all"}  rate=3 RPM\n`);
+  console.log(`window=${WINDOW}  threshold=${THRESHOLD}  limit=${LIMIT || "none"}  project=${PROJECT ?? "all"}  rate=3 RPM`);
+  console.log();
 
   const state = loadState();
   let files = collectSessionFiles();
@@ -239,7 +312,7 @@ async function main() {
   }
 
   let pending = files.filter(f => !state.ingested[f]);
-  console.log(`${pending.length} not yet ingested`);
+  console.log(`${pending.length} pending  |  ${files.length - pending.length} already ingested`);
 
   if (LIMIT > 0 && pending.length > LIMIT) {
     console.log(`Capping to ${LIMIT} sessions (--limit)`);
@@ -263,34 +336,42 @@ async function main() {
 
   let sessionsProcessed = 0;
   let memoriesStored = 0;
+  const total = pending.length;
+  const padLen = String(total).length;
 
-  for (const filePath of pending) {
+  for (let si = 0; si < pending.length; si++) {
+    const filePath = pending[si];
+    const prefix = `[${String(si + 1).padStart(padLen)}/${total}]`;
 
     const turns = parseSession(filePath);
     if (turns.length < 2) {
       state.ingested[filePath] = new Date().toISOString();
       saveState(state);
+      println(`${prefix} skipped — too short (${turns.length} turns)`);
       continue;
     }
 
     const source = sourceLabel(filePath);
     const sessionDate = turns[0]?.timestamp?.slice(0, 10) ?? "unknown";
-    const sessionLabel = `${source} session ${sessionDate}`;
+    const sessionLabel = `${source}  ${sessionDate}`;
+
+    const windows = Math.ceil(turns.length / WINDOW);
+    let sessionMemories = 0;
 
     // Split into windows of WINDOW turns
-    for (let i = 0; i < turns.length; i += WINDOW) {
-      const window = turns.slice(i, i + WINDOW);
+    for (let wi = 0; wi < turns.length; wi += WINDOW) {
+      const window = turns.slice(wi, wi + WINDOW);
       if (window.length < 2) continue;
+
+      const winNum = Math.floor(wi / WINDOW) + 1;
+      setStatus(`${prefix} ${sessionLabel}  win ${winNum}/${windows}  ${memoriesStored + sessionMemories} stored`);
 
       const firstUserMsg = window.find(t => t.role === "user")?.text ?? "";
       const windowSummary = `${sessionLabel}: ${firstUserMsg.slice(0, 80)}${firstUserMsg.length > 80 ? "…" : ""}`;
 
-      // ── Step A: score user turns in parallel, store the best one ─────────
-      // One episodic per window = one Voyage call. Together with the checkpoint
-      // that's exactly 2 calls/window, well within the 3 RPM free-tier limit.
+      // ── Score user turns in parallel (Anthropic Haiku — separate rate limit) ─
       const userTurns = window.filter(t => t.role === "user");
 
-      // Score all user turns concurrently (Anthropic Haiku — separate rate limit)
       const scores = await Promise.all(
         userTurns.map(async (turn) => {
           const scoreInput = `${windowSummary} ${turn.text.slice(0, 400)}`;
@@ -302,61 +383,55 @@ async function main() {
         })
       );
 
-      // Pick the highest-scoring turn that clears the threshold
       const best = scores
-        .filter(s => s.importance === undefined || s.importance >= THRESHOLD)
-        .sort((a, b) => (b.importance ?? 0.5) - (a.importance ?? 0.5))[0];
+        .sort((a, b) => (b.importance ?? -1) - (a.importance ?? -1))[0];
+      const isHighlight = best?.importance !== undefined && best.importance >= THRESHOLD;
 
-      if (best) {
-        try {
-          const tags = brain.inferConcepts(best.turn.text, source, []);
-          await voyageLimiter.throttle();
-          await brain.store({
-            type: "episodic",
-            content: `${sessionLabel}\n\nUser: ${best.turn.text}`,
-            summary: windowSummary,
-            source,
-            tags,
-            ...(best.importance !== undefined ? { importance: best.importance } : {}),
-          });
-          memoriesStored++;
-        } catch (err: any) {
-          console.error(`\n[episodic] ${filePath}: ${err.message}`);
-        }
-      }
-
-      // ── Step B: semantic checkpoint (always) ──────────────────────────────
       const windowText = window
         .map(t => `${t.role === "user" ? "User" : "Assistant"}: ${t.text}`)
         .join("\n\n");
 
-      const checkpointSummary = `Checkpoint — ${sessionLabel} (turns ${i + 1}–${i + window.length})`;
+      const generatedSummary = await summarizeWindowDirect(windowText);
+      const checkpointSummary = generatedSummary
+        ? `Checkpoint — ${sessionLabel} (turns ${wi + 1}–${wi + window.length})\n${generatedSummary}`
+        : `Checkpoint — ${sessionLabel} (turns ${wi + 1}–${wi + window.length})`;
+
+      const content = [
+        windowText.slice(0, 1800),
+        isHighlight ? `\n\n── Highlight (importance ${best!.importance!.toFixed(2)}) ──\n${best!.turn.text.slice(0, 400)}` : "",
+      ].join("").trim();
 
       try {
-        const tags = brain.inferConcepts(checkpointSummary, source, []);
-        await voyageLimiter.throttle(); // respect 3 RPM before each store
+        const tags = await inferConceptsDirect(checkpointSummary + (best ? " " + best.turn.text.slice(0, 100) : ""));
+        await voyageLimiter.throttle((waitSec) => {
+          setStatus(`${prefix} ${sessionLabel}  win ${winNum}/${windows}  ⏸ rate limit — ${waitSec}s…`);
+        });
+        setStatus(`${prefix} ${sessionLabel}  win ${winNum}/${windows}  storing…`);
         await brain.store({
           type: "semantic",
-          content: windowText.slice(0, 2000),
+          content,
           summary: checkpointSummary,
           source: "checkpoint",
           tags,
+          importance: best?.importance ?? 0.5,
         });
-        memoriesStored++;
+        sessionMemories++;
       } catch (err: any) {
-        console.error(`\n[checkpoint] ${filePath}: ${err.message}`);
+        println(`  ✗ ${prefix} win ${winNum}: ${err.message}`);
       }
     }
 
     state.ingested[filePath] = new Date().toISOString();
     saveState(state);
     sessionsProcessed++;
-    process.stdout.write("✓");
+    memoriesStored += sessionMemories;
+
+    println(`✓ ${prefix} ${sessionLabel}  ${windows} win${windows !== 1 ? "s" : ""}  →  ${sessionMemories} memories`);
   }
 
   brain.destroy();
-
-  console.log(`\n\nDone. ${sessionsProcessed} sessions ingested, ${memoriesStored} memories stored.`);
+  console.log();
+  console.log(`Done. ${sessionsProcessed} sessions ingested, ${memoriesStored} memories stored.`);
 }
 
 main().catch(err => {

@@ -59,6 +59,7 @@ import { createBrain } from "./brain.js";
 import { registerToolHandlers } from "./tools/index.js";
 import { registerResourceHandlers } from "./resources/handlers.js";
 import { registerPromptHandlers } from "./prompts/index.js";
+import { startExplorer } from "./http.js";
 
 /**
  * Bootstrap and run the clude MCP server.
@@ -114,7 +115,18 @@ export async function main(): Promise<void> {
   registerPromptHandlers(server, brain);
 
   // -------------------------------------------------------------------------
-  // 5. Shutdown — wire SIGINT/SIGTERM for graceful cleanup.
+  // 5. Explorer — start local HTTP server if EXPLORER_PORT is set.
+  //    Shares the brain instance with MCP tools. Binds to 127.0.0.1 only.
+  // -------------------------------------------------------------------------
+  const explorerPort = process.env.EXPLORER_PORT
+    ? Number(process.env.EXPLORER_PORT)
+    : null;
+  if (explorerPort) {
+    startExplorer(brain, explorerPort);
+  }
+
+  // -------------------------------------------------------------------------
+  // 6. Shutdown — wire SIGINT/SIGTERM for graceful cleanup.
   //    Calling brain.destroy() stops the dream scheduler + event bus.
   //    The process exits immediately after — no async teardown needed.
   // -------------------------------------------------------------------------
@@ -126,7 +138,7 @@ export async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
 
   // -------------------------------------------------------------------------
-  // 6. Connect — attach the stdio transport and start the JSON-RPC loop.
+  // 7. Connect — attach the stdio transport and start the JSON-RPC loop.
   //    After this point the server is live and will handle incoming requests.
   // -------------------------------------------------------------------------
   const transport = new StdioServerTransport();
