@@ -11,11 +11,18 @@
  *   - Semantic checkpoint per N-turn window (always stored)
  *
  * Usage:
- *   npx tsx scripts/ingest-sessions.ts [--window 10] [--threshold 0.4] [--dry-run]
+ *   npx tsx scripts/ingest-sessions.ts [options]
+ *
+ * Options:
+ *   --limit N          Max sessions to process per run (default: unlimited)
+ *   --project <pat>    Only process sessions from projects matching this substring
+ *   --window N         Turns per memory window (default: 10)
+ *   --threshold N      Min importance score to store episodic memory (default: 0.4)
+ *   --dry-run          Preview what would be processed without storing anything
  *
  * State:
  *   Progress is saved to ~/.claude/clude-ingest-state.json so re-runs skip
- *   already-ingested session files.
+ *   already-ingested session files. Run repeatedly to process in batches.
  */
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from "fs";
@@ -29,11 +36,15 @@ import { buildConfig } from "../src/config.js";
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
-const DRY_RUN = args.includes("--dry-run");
-const WINDOW_IDX = args.indexOf("--window");
-const THRESH_IDX = args.indexOf("--threshold");
-const WINDOW = WINDOW_IDX !== -1 ? (parseInt(args[WINDOW_IDX + 1], 10) || 10) : 10;
-const THRESHOLD = THRESH_IDX !== -1 ? (parseFloat(args[THRESH_IDX + 1]) || 0.4) : 0.4;
+const DRY_RUN     = args.includes("--dry-run");
+const WINDOW_IDX  = args.indexOf("--window");
+const THRESH_IDX  = args.indexOf("--threshold");
+const LIMIT_IDX   = args.indexOf("--limit");
+const PROJECT_IDX = args.indexOf("--project");
+const WINDOW    = WINDOW_IDX  !== -1 ? (parseInt(args[WINDOW_IDX  + 1], 10) || 10)  : 10;
+const THRESHOLD = THRESH_IDX  !== -1 ? (parseFloat(args[THRESH_IDX + 1])    || 0.4) : 0.4;
+const LIMIT     = LIMIT_IDX   !== -1 ? (parseInt(args[LIMIT_IDX   + 1], 10) || 0)   : 0; // 0 = unlimited
+const PROJECT   = PROJECT_IDX !== -1 ? args[PROJECT_IDX + 1] : undefined;
 
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const STATE_FILE = join(homedir(), ".claude", "clude-ingest-state.json");
@@ -142,14 +153,27 @@ function sourceLabel(filePath: string): string {
 
 async function main() {
   console.log(`clude session ingestion${DRY_RUN ? " [DRY RUN]" : ""}`);
-  console.log(`window=${WINDOW} turns  threshold=${THRESHOLD}\n`);
+  console.log(`window=${WINDOW}  threshold=${THRESHOLD}  limit=${LIMIT || "none"}  project=${PROJECT ?? "all"}\n`);
 
   const state = loadState();
-  const files = collectSessionFiles();
-  console.log(`Found ${files.length} session files`);
+  let files = collectSessionFiles();
 
-  const pending = files.filter(f => !state.ingested[f]);
-  console.log(`${pending.length} not yet ingested\n`);
+  if (PROJECT) {
+    files = files.filter(f => f.includes(PROJECT));
+    console.log(`Filtered to project "${PROJECT}": ${files.length} files`);
+  } else {
+    console.log(`Found ${files.length} session files`);
+  }
+
+  let pending = files.filter(f => !state.ingested[f]);
+  console.log(`${pending.length} not yet ingested`);
+
+  if (LIMIT > 0 && pending.length > LIMIT) {
+    console.log(`Capping to ${LIMIT} sessions (--limit)`);
+    pending = pending.slice(0, LIMIT);
+  }
+
+  console.log();
 
   if (DRY_RUN) {
     for (const f of pending) console.log(" ", f);
@@ -167,11 +191,7 @@ async function main() {
   let sessionsProcessed = 0;
   let memoriesStored = 0;
 
-  for (const filePath of files) {
-    if (state.ingested[filePath]) {
-      process.stdout.write(".");
-      continue;
-    }
+  for (const filePath of pending) {
 
     const turns = parseSession(filePath);
     if (turns.length < 2) {
