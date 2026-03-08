@@ -118,13 +118,17 @@ async function handleRequest(
 
   // ── API Routes ────────────────────────────────────────────────────────────
 
-  // GET /api/brain?limit=1000
+  // GET /api/brain?min_importance=0.0
   // Uses recallSummaries (10x lighter than full recall — no content field).
   // Returns { nodes } for the explorer graph/cards. Content is fetched on
   // demand via GET /api/memory/:id when the user opens a provenance panel.
+  // No hard node cap — min_importance is the natural filter.
   if (path === "/api/brain") {
-    const limit = Math.min(Number(url.searchParams.get("limit") ?? 1000), 2000);
-    const summaries = await brain.recallSummaries({ limit });
+    const minImportance = Number(url.searchParams.get("min_importance") ?? 0);
+    const summaries = await brain.recallSummaries({
+      limit: 10000,
+      minImportance: minImportance > 0 ? minImportance : undefined,
+    });
     const nodes = summaries.map((m: any) => ({
       id: m.id,
       type: m.memory_type ?? "episodic",

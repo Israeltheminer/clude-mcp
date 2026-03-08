@@ -1137,7 +1137,9 @@
           </div>
         </div>
         <div class="nav-links">
-          <a href="/">Explorer</a>
+          <a href="/explore.html">Explorer</a>
+          <a href="/timeline.html">Timeline</a>
+          <a href="/brain.html" class="nav-active">Neural Map</a>
         </div>
       </div>
     </nav>
@@ -1150,6 +1152,10 @@
     </div>
 
     <div class="filter-bar">
+      <span class="filter-label">Threshold</span>
+      <input type="range" id="thresholdSlider" min="0" max="90" value="0" step="5">
+      <span class="filter-val" id="thresholdVal">all</span>
+      <span style="color:rgba(0,0,0,0.15);margin:0 4px">|</span>
       <span class="filter-label">Importance</span>
       <input type="range" id="impSlider" min="0" max="100" value="0">
       <span class="filter-val" id="impVal">0%</span>
@@ -2024,6 +2030,18 @@
         } );
       } );
 
+      let thresholdFetchTimer=null;
+      document.getElementById( 'thresholdSlider' ).addEventListener( 'input', e => {
+        currentThreshold=+e.target.value;
+        document.getElementById( 'thresholdVal' ).textContent=currentThreshold > 0 ? currentThreshold+'%+' : 'all';
+        // Debounce re-fetch by 600ms so slider dragging doesn't spam the server
+        clearTimeout( thresholdFetchTimer );
+        thresholdFetchTimer=setTimeout( () => {
+          initialLoadDone=false;
+          fetchBrain();
+        }, 600 );
+      } );
+
       document.getElementById( 'impSlider' ).addEventListener( 'input', e => {
         impThreshold=+e.target.value;
         document.getElementById( 'impVal' ).textContent=impThreshold+'%';
@@ -2056,8 +2074,10 @@
 
       function updateStats() {
         const vis=memoryNodes.filter( n => n.visible );
-        const total=Math.max( totalMemoryCount, memoryNodes.length );
-        document.getElementById( 'sNodes' ).textContent=total;
+        const visCount=vis.length;
+        const fetchedCount=memoryNodes.length;
+        document.getElementById( 'sNodes' ).textContent=
+          visCount === fetchedCount ? visCount : visCount+' / '+fetchedCount;
         document.getElementById( 'sEdges' ).textContent=edges.length;
         let td=0, ti=0;
         for ( const n of vis ) { td+=n.decay; ti+=n.importance; }
@@ -2349,8 +2369,11 @@
       /* ============= DATA FETCH ============= */
       let initialLoadDone=false;
 
+      let currentThreshold=0;
+
       function fetchBrain() {
-        fetch( '/api/brain?limit=500' ).then( r => r.json() ).then( data => {
+        const url='/api/brain' + ( currentThreshold > 0 ? '?min_importance=' + ( currentThreshold / 100 ).toFixed(2) : '' );
+        fetch( url ).then( r => r.json() ).then( data => {
           if ( !data.nodes?.length ) {
             if ( !initialLoadDone ) {
               document.querySelector( '.loading-text' ).textContent='NO MEMORIES FOUND';

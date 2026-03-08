@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Memory Timeline — clude</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f5f5f0;
+      --bg-warm: #eeeee8;
+      --text: #111;
+      --text-muted: #666;
+      --text-faint: #999;
+      --border: rgba(0,0,0,0.08);
+      --border-strong: rgba(0,0,0,0.15);
+      --accent: #2244ff;
+      --episodic: #1a3abf;
+      --semantic: #3a4a7a;
+      --procedural: #2a6a3a;
+      --selfmodel: #5a3a80;
+      --mono: 'JetBrains Mono', monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: var(--mono); background: var(--bg); color: var(--text); font-size: 13px; min-height: 100vh; }
+
+    /* NAV */
+    nav { position: sticky; top: 0; z-index: 100; background: var(--bg); border-bottom: 1px solid var(--border); }
+    .nav-inner { max-width: 960px; margin: 0 auto; padding: 0 24px; height: 52px; display: flex; align-items: center; justify-content: space-between; }
+    .nav-left { display: flex; align-items: center; gap: 1rem; }
+    .nav-logo { font-size: 13px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--text); text-decoration: none; }
+    .nav-logo:hover { color: var(--accent); }
+    .nav-links { display: flex; gap: 24px; }
+    .nav-links a { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-muted); text-decoration: none; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-links a.active { color: var(--text); font-weight: 600; }
+
+    /* MAIN */
+    main { max-width: 960px; margin: 0 auto; padding: 48px 24px 80px; }
+    .page-header { margin-bottom: 40px; }
+    .page-label { font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: var(--text-faint); margin-bottom: 10px; }
+    .page-title { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 6px; }
+    .page-sub { font-size: 12px; color: var(--text-muted); }
+
+    /* FILTERS */
+    .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 36px; }
+    .search-wrap { position: relative; }
+    .search-wrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; stroke: var(--text-faint); fill: none; pointer-events: none; }
+    .search-input {
+      font-family: var(--mono); font-size: 11px;
+      padding: 7px 12px 7px 30px;
+      border: 1px solid var(--border-strong);
+      background: transparent; color: var(--text); outline: none; width: 220px;
+    }
+    .search-input:focus { border-color: var(--accent); }
+    .search-input::placeholder { color: var(--text-faint); }
+    .type-btn {
+      font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+      padding: 6px 12px; border: 1px solid var(--border-strong);
+      background: transparent; color: var(--text-muted); cursor: pointer;
+    }
+    .type-btn:hover { color: var(--text); border-color: var(--text); }
+    .type-btn.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+    .type-btn[data-type="episodic"].active { background: var(--episodic); border-color: var(--episodic); color: white; }
+    .type-btn[data-type="semantic"].active { background: var(--semantic); border-color: var(--semantic); color: white; }
+    .type-btn[data-type="procedural"].active { background: var(--procedural); border-color: var(--procedural); color: white; }
+    .type-btn[data-type="self_model"].active { background: var(--selfmodel); border-color: var(--selfmodel); color: white; }
+    .range-select {
+      font-family: var(--mono); font-size: 10px; padding: 7px 10px;
+      border: 1px solid var(--border-strong); background: transparent; color: var(--text-muted);
+      cursor: pointer; outline: none; margin-left: auto;
+    }
+    .result-count { font-size: 11px; color: var(--text-faint); margin-left: 4px; }
+
+    /* TIMELINE */
+    .timeline { position: relative; padding-left: 36px; }
+    .timeline-spine {
+      position: absolute; left: 12px; top: 0; bottom: 0; width: 1px;
+      background: var(--border-strong);
+    }
+    .tl-item { position: relative; margin-bottom: 16px; }
+    .tl-dot {
+      position: absolute; left: -32px; top: 16px;
+      width: 9px; height: 9px; border-radius: 50%;
+      border: 2px solid var(--bg);
+    }
+    .tl-dot[data-type="episodic"] { background: var(--episodic); }
+    .tl-dot[data-type="semantic"] { background: var(--semantic); }
+    .tl-dot[data-type="procedural"] { background: var(--procedural); }
+    .tl-dot[data-type="self_model"] { background: var(--selfmodel); }
+
+    /* CARD */
+    .tl-card {
+      border: 1px solid var(--border-strong); background: var(--bg);
+      cursor: pointer; transition: background 0.1s;
+    }
+    .tl-card:hover { background: var(--bg-warm); }
+    .tl-card.expanded { background: var(--bg-warm); }
+    .card-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px 10px; }
+    .card-type {
+      font-size: 9px; letter-spacing: 1px; text-transform: uppercase; font-weight: 700;
+    }
+    .card-type[data-type="episodic"] { color: var(--episodic); }
+    .card-type[data-type="semantic"] { color: var(--semantic); }
+    .card-type[data-type="procedural"] { color: var(--procedural); }
+    .card-type[data-type="self_model"] { color: var(--selfmodel); }
+    .card-date { font-size: 10px; color: var(--text-faint); }
+    .card-imp { font-size: 10px; color: var(--text-faint); margin-left: auto; }
+    .card-summary { padding: 0 18px 14px; font-size: 12px; line-height: 1.65; color: var(--text); }
+    .card-expand { border-top: 1px solid var(--border); padding: 14px 18px; }
+    .card-content { font-size: 11px; color: var(--text-muted); line-height: 1.7; margin-bottom: 12px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+    .card-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .card-tag {
+      font-size: 9px; padding: 2px 7px; letter-spacing: 0.5px;
+      background: rgba(34,68,255,0.08); color: var(--accent);
+    }
+    .card-concept {
+      font-size: 9px; padding: 2px 7px; letter-spacing: 0.5px;
+      background: rgba(0,0,0,0.04); color: var(--text-muted);
+    }
+    .card-footer { font-size: 9px; color: var(--text-faint); margin-top: 8px; line-height: 1.8; }
+
+    /* LOADING / EMPTY */
+    .state-msg { text-align: center; padding: 60px 0; color: var(--text-faint); font-size: 12px; letter-spacing: 1px; }
+
+    /* SEARCH MODE INDICATOR */
+    .mode-pill {
+      display: none; font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+      padding: 3px 8px; border: 1px solid var(--border-strong); color: var(--text-faint);
+    }
+    .mode-pill.vis { display: inline-block; }
+
+    @media (max-width: 600px) {
+      .nav-links { display: none; }
+      .filters { gap: 6px; }
+      .search-input { width: 160px; }
+      .range-select { margin-left: 0; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <div class="nav-left">
+      <a href="/explore.html" class="nav-logo">clude</a>
+    </div>
+    <div class="nav-links">
+      <a href="/explore.html">Explorer</a>
+      <a href="/timeline.html" class="active">Timeline</a>
+      <a href="/brain.html">Neural Map</a>
+    </div>
+  </div>
+</nav>
+
+<main>
+  <div class="page-header">
+    <div class="page-label">Memory</div>
+    <h1 class="page-title">Timeline</h1>
+    <p class="page-sub" id="subCount">Loading memories…</p>
+  </div>
+
+  <div class="filters">
+    <div class="search-wrap">
+      <svg viewBox="0 0 24 24" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input class="search-input" id="searchInput" type="text" placeholder="Search memories…">
+    </div>
+    <span class="mode-pill" id="modePill">semantic search</span>
+    <button class="type-btn active" data-type="all">All</button>
+    <button class="type-btn" data-type="episodic">Episodic</button>
+    <button class="type-btn" data-type="semantic">Semantic</button>
+    <button class="type-btn" data-type="procedural">Procedural</button>
+    <button class="type-btn" data-type="self_model">Self-Model</button>
+    <select class="range-select" id="rangeSelect">
+      <option value="24">24 hours</option>
+      <option value="72">3 days</option>
+      <option value="168" selected>1 week</option>
+      <option value="720">30 days</option>
+      <option value="0">All time</option>
+    </select>
+  </div>
+
+  <div class="timeline" id="timeline">
+    <div class="timeline-spine"></div>
+    <div class="state-msg" id="stateMsg">Loading…</div>
+  </div>
+</main>
+
+<script>
+  const TYPE_LABELS = { episodic: 'Episodic', semantic: 'Semantic', procedural: 'Procedural', self_model: 'Self-Model' };
+  let allMemories = [];
+  let activeType = 'all';
+  let searchDebounce = null;
+  let isSearchMode = false;
+
+  // ── FETCH ──────────────────────────────────────────────────────────────────
+  async function loadRecent(hours) {
+    isSearchMode = false;
+    document.getElementById('modePill').classList.remove('vis');
+    const url = hours > 0
+      ? '/api/recent?hours=' + hours + '&limit=500'
+      : '/api/brain';
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    // /api/brain returns { nodes: [...] }, /api/recent returns { count, memories: [...] }
+    allMemories = Array.isArray(data) ? data : (data.memories || data.nodes || []);
+    // Normalise field names (brain returns camelCase-ish mixed, recent returns snake_case)
+    allMemories = allMemories.map(normalise);
+    render();
+  }
+
+  async function searchMemories(query) {
+    if (!query.trim()) {
+      loadRecent(+document.getElementById('rangeSelect').value);
+      return;
+    }
+    isSearchMode = true;
+    document.getElementById('modePill').classList.add('vis');
+    const r = await fetch('/api/recall?query=' + encodeURIComponent(query) + '&limit=100');
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    allMemories = (Array.isArray(data) ? data : (data.memories || [])).map(normalise);
+    render();
+  }
+
+  function normalise(m) {
+    return {
+      id:          m.id,
+      type:        m.memory_type ?? m.type ?? 'episodic',
+      summary:     m.summary ?? '',
+      content:     m.content ?? '',
+      tags:        m.tags ?? [],
+      concepts:    m.concepts ?? [],
+      source:      m.source ?? '',
+      importance:  m.importance ?? 0,
+      decay:       m.decay_factor ?? m.decay ?? 1,
+      accessCount: m.access_count ?? 0,
+      createdAt:   m.created_at ?? m.createdAt ?? null,
+    };
+  }
+
+  // ── RENDER ─────────────────────────────────────────────────────────────────
+  function render() {
+    const filtered = allMemories.filter(m => activeType === 'all' || m.type === activeType);
+    const tl = document.getElementById('timeline');
+    const stateMsg = document.getElementById('stateMsg');
+
+    // Clear existing cards (keep spine)
+    Array.from(tl.querySelectorAll('.tl-item')).forEach(el => el.remove());
+
+    document.getElementById('subCount').textContent =
+      filtered.length + ' memor' + (filtered.length === 1 ? 'y' : 'ies') +
+      (isSearchMode ? ' matching search' : ' shown');
+
+    if (filtered.length === 0) {
+      stateMsg.style.display = 'block';
+      stateMsg.textContent = isSearchMode ? 'No memories match that query' : 'No memories in this time range';
+      return;
+    }
+    stateMsg.style.display = 'none';
+
+    filtered.forEach(m => {
+      const item = buildCard(m);
+      tl.appendChild(item);
+    });
+  }
+
+  function buildCard(m) {
+    const item = document.createElement('div');
+    item.className = 'tl-item';
+
+    const dot = document.createElement('div');
+    dot.className = 'tl-dot';
+    dot.dataset.type = m.type;
+    item.appendChild(dot);
+
+    const card = document.createElement('div');
+    card.className = 'tl-card';
+
+    const head = document.createElement('div');
+    head.className = 'card-head';
+
+    const typeEl = document.createElement('span');
+    typeEl.className = 'card-type';
+    typeEl.dataset.type = m.type;
+    typeEl.textContent = TYPE_LABELS[m.type] || m.type;
+
+    const dateEl = document.createElement('span');
+    dateEl.className = 'card-date';
+    if (m.createdAt) {
+      const d = new Date(m.createdAt);
+      dateEl.textContent = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    const impEl = document.createElement('span');
+    impEl.className = 'card-imp';
+    impEl.textContent = 'imp ' + m.importance.toFixed(2) + ' · decay ' + m.decay.toFixed(2);
+
+    head.appendChild(typeEl);
+    head.appendChild(dateEl);
+    head.appendChild(impEl);
+
+    const summaryEl = document.createElement('div');
+    summaryEl.className = 'card-summary';
+    summaryEl.textContent = m.summary;
+
+    card.appendChild(head);
+    card.appendChild(summaryEl);
+
+    // Expand on click
+    let expanded = false;
+    let expandEl = null;
+
+    card.addEventListener('click', async () => {
+      expanded = !expanded;
+      card.classList.toggle('expanded', expanded);
+      if (expanded) {
+        expandEl = await buildExpand(m);
+        card.appendChild(expandEl);
+      } else {
+        if (expandEl) { card.removeChild(expandEl); expandEl = null; }
+      }
+    });
+
+    item.appendChild(card);
+    return item;
+  }
+
+  async function buildExpand(m) {
+    const el = document.createElement('div');
+    el.className = 'card-expand';
+
+    // Hydrate content if missing
+    let content = m.content;
+    if (!content && m.id) {
+      try {
+        const r = await fetch('/api/memory/' + m.id);
+        if (r.ok) { const d = await r.json(); content = d.content ?? d.summary ?? ''; }
+      } catch {}
+    }
+
+    if (content) {
+      const contentEl = document.createElement('div');
+      contentEl.className = 'card-content';
+      contentEl.textContent = content;
+      el.appendChild(contentEl);
+    }
+
+    const tagsWrap = document.createElement('div');
+    tagsWrap.className = 'card-tags';
+    (m.tags || []).forEach(t => {
+      const tag = document.createElement('span');
+      tag.className = 'card-tag';
+      tag.textContent = t;
+      tagsWrap.appendChild(tag);
+    });
+    (m.concepts || []).forEach(c => {
+      const con = document.createElement('span');
+      con.className = 'card-concept';
+      con.textContent = c;
+      tagsWrap.appendChild(con);
+    });
+    if (tagsWrap.children.length) el.appendChild(tagsWrap);
+
+    const footer = document.createElement('div');
+    footer.className = 'card-footer';
+    footer.textContent = 'ID: ' + m.id + ' · Source: ' + (m.source || '—') + ' · Accessed: ' + m.accessCount + 'x';
+    el.appendChild(footer);
+
+    return el;
+  }
+
+  // ── CONTROLS ───────────────────────────────────────────────────────────────
+  document.querySelectorAll('.type-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.type-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeType = btn.dataset.type;
+      render();
+    });
+  });
+
+  document.getElementById('rangeSelect').addEventListener('change', e => {
+    const q = document.getElementById('searchInput').value.trim();
+    if (!q) loadRecent(+e.target.value);
+  });
+
+  document.getElementById('searchInput').addEventListener('input', e => {
+    clearTimeout(searchDebounce);
+    const q = e.target.value.trim();
+    searchDebounce = setTimeout(() => searchMemories(q), 400);
+  });
+
+  // ── INIT ───────────────────────────────────────────────────────────────────
+  loadRecent(168).catch(err => {
+    document.getElementById('stateMsg').style.display = 'block';
+    document.getElementById('stateMsg').textContent = 'Could not connect to local clude server';
+    document.getElementById('subCount').textContent = 'offline';
+    console.warn('[timeline] fetch failed:', err);
+  });
+</script>
+</body>
+</html>

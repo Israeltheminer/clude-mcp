@@ -315,40 +315,47 @@
     }
     /* ── MEMORY CARDS ── */
     .cards-section {
-      max-width: 1200px; margin: 24px auto 60px; padding: 0 20px;
+      max-width: 800px; margin: 24px auto 60px; padding: 0 20px;
       display: none;
     }
     .cards-section.visible { display: block; }
     .cards-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-      gap: 12px;
+      position: relative;
+      padding-left: 36px;
+    }
+    .cards-grid::before {
+      content: '';
+      position: absolute; left: 12px; top: 0; bottom: 0;
+      width: 1px; background: var(--border);
     }
     .memory-card {
+      position: relative;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-left: 3px solid var(--text-faint);
-      padding: 16px 18px;
+      padding: 14px 18px;
       cursor: pointer;
-      transition: all 0.25s;
-      position: relative;
+      transition: background 0.1s;
+      margin-bottom: 12px;
     }
-    .memory-card:hover {
-      border-color: rgba(0,0,0,0.12);
-      box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+    .memory-card::before {
+      content: '';
+      position: absolute; left: -32px; top: 16px;
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--text-faint);
+      border: 2px solid var(--bg);
     }
-    .memory-card[data-type="episodic"] { border-left-color: var(--episodic); }
-    .memory-card[data-type="semantic"] { border-left-color: var(--semantic); }
-    .memory-card[data-type="procedural"] { border-left-color: var(--procedural); }
-    .memory-card[data-type="self_model"] { border-left-color: var(--selfmodel); }
+    .memory-card:hover { background: var(--bg-warm, #eeeee8); }
+    .memory-card[data-type="episodic"]::before { background: var(--episodic); }
+    .memory-card[data-type="semantic"]::before { background: var(--semantic); }
+    .memory-card[data-type="procedural"]::before { background: var(--procedural); }
+    .memory-card[data-type="self_model"]::before { background: var(--selfmodel); }
     .card-header {
       display: flex; align-items: center; gap: 10px;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
     }
     .card-type {
-      font-size: 8px; letter-spacing: 2px; text-transform: uppercase;
-      font-weight: 700; padding: 2px 8px;
-      border: 1px solid currentColor; white-space: nowrap;
+      font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+      font-weight: 700; white-space: nowrap;
     }
     .card-type[data-type="episodic"] { color: var(--episodic); }
     .card-type[data-type="semantic"] { color: var(--semantic); }
@@ -358,24 +365,8 @@
       font-size: 9px; color: var(--text-faint); margin-left: auto;
     }
     .card-summary {
-      font-size: 11px; line-height: 1.7; color: var(--text-muted);
-      font-weight: 300; margin-bottom: 12px;
-      display: -webkit-box; -webkit-line-clamp: 3;
-      -webkit-box-orient: vertical; overflow: hidden;
-    }
-    .card-meta {
-      display: flex; align-items: center; gap: 14px;
-      font-size: 9px; color: var(--text-faint);
-      letter-spacing: 0.5px;
-    }
-    .card-meta .v { color: var(--text-muted); font-weight: 500; }
-    .card-imp-bar {
-      width: 40px; height: 3px; background: rgba(0,0,0,0.06);
-      position: relative; flex-shrink: 0;
-    }
-    .card-imp-fill {
-      position: absolute; top: 0; left: 0; height: 100%;
-      background: var(--text-muted);
+      font-size: 12px; line-height: 1.65; color: var(--text);
+      margin-bottom: 10px;
     }
     .card-tags {
       display: flex; gap: 4px; flex-wrap: wrap;
@@ -693,6 +684,8 @@
         </div>
       </div>
       <div class="nav-links">
+        <a href="/explore.html" class="nav-active">Explorer</a>
+        <a href="/timeline.html">Timeline</a>
         <a href="/brain.html">Neural Map</a>
       </div>
     </div>
@@ -1303,30 +1296,26 @@
       '<span class="stat" title="Vitality: 100% = fresh (no decay applied yet). Decreases over time as memories age.">vitality <span class="v">' + avgDecay + '%</span></span>';
   }
   function renderCardHtml(n, showScores) {
-    const typeName = (n.type || 'episodic').replace('_', ' ');
+    const TYPE_LABELS = { episodic: 'Episodic', semantic: 'Semantic', procedural: 'Procedural', self_model: 'Self-Model' };
+    const typeName = TYPE_LABELS[n.type] || (n.type || 'episodic').replace('_', ' ');
     const age = timeAgo(n.createdAt);
-    const tags = (n.tags || []).slice(0, 4).map(t => '<span class="card-tag">' + esc(t) + '</span>').join('');
+    const tags = (n.tags || []).slice(0, 5).map(t => '<span class="card-tag">' + esc(t) + '</span>').join('');
     const scoreHtml = showScores && n._score ? '<span class="card-score">' + (n._score).toFixed(2) + '</span>' : '';
     const hasEvidence = (n.evidenceIds && n.evidenceIds.length > 0);
     return '<div class="memory-card" data-type="' + esc(n.type) + '" onclick="openProvenance(' + n.id + ')">' +
       scoreHtml +
       '<div class="card-header">' +
         '<span class="card-type" data-type="' + esc(n.type) + '">' + esc(typeName) + '</span>' +
-        '<span class="card-id">#' + n.id + '</span>' +
+        '<span class="card-id">' + age + '</span>' +
+        '<span class="card-id" style="margin-left:12px">imp ' + (n.importance || 0).toFixed(2) + ' · vitality ' + ((n.decay ?? 1) * 100).toFixed(0) + '%</span>' +
       '</div>' +
       '<div class="card-summary">' + esc(n.summary || '') + '</div>' +
-      '<div class="card-meta">' +
-        '<span>imp <span class="v">' + (n.importance || 0).toFixed(2) + '</span></span>' +
-        '<div class="card-imp-bar"><div class="card-imp-fill" style="width:' + ((n.importance || 0) * 100) + '%"></div></div>' +
-        '<span title="Vitality: 100%=fresh, decreases with time">vitality <span class="v">' + ((n.decay ?? 1) * 100).toFixed(0) + '%</span></span>' +
-        '<span>' + age + '</span>' +
-        (n._traceCount ? '<span style="color:var(--accent)" title="Trace depth">⛓ ' + n._traceCount + ' traces</span>' : '') +
-        (hasEvidence ? '<span style="color:var(--accent)">🔗' + n.evidenceIds.length + '</span>' : '') +
-      '</div>' +
       (tags ? '<div class="card-tags">' + tags + '</div>' : '') +
       '<div class="card-actions">' +
         '<button onclick="event.stopPropagation(); openProvenance(' + n.id + ')">&#x2B95; Trace</button>' +
         '<button onclick="event.stopPropagation(); focusInBrain(' + n.id + ')">&#x25CE; Focus</button>' +
+        (n._traceCount ? '<span style="font-size:9px;color:var(--accent);margin-left:auto">⛓ ' + n._traceCount + ' traces</span>' : '') +
+        (hasEvidence ? '<span style="font-size:9px;color:var(--accent)">🔗 ' + n.evidenceIds.length + '</span>' : '') +
       '</div>' +
     '</div>';
   }
