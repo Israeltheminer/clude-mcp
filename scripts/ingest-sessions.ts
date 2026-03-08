@@ -1,4 +1,4 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env node
 /**
  * ingest-sessions.ts
  *
@@ -11,7 +11,8 @@
  *   - Semantic checkpoint per N-turn window (always stored)
  *
  * Usage:
- *   npx tsx scripts/ingest-sessions.ts [options]
+ *   npm run ingest -- [options]
+ *   node --require tsx/cjs scripts/ingest-sessions.ts [options]
  *
  * Options:
  *   --limit N          Max sessions to process per run (default: unlimited)
