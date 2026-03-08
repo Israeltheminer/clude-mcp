@@ -133,16 +133,43 @@ The `agent_memory_protocol` MCP prompt is the core of the system. It returns a c
 | **Immediately** | `self_model` memories stored on any identity/preference statement |
 | **Every write** | `infer_concepts` generates tags; `link_memories` connects related memories |
 
-To activate it globally in Claude Code, add this to `~/.claude/CLAUDE.md`:
+To activate it globally in Claude Code, create `~/.claude/CLAUDE.md` with the protocol embedded directly — **do not** use the `agent_memory_protocol` MCP prompt for this; that requires a separate API call at session start which is unreliable:
 
 ```markdown
 # Memory Protocol
 
-You have access to a persistent memory MCP server (`clude`). Follow this protocol on every session:
+You have access to a persistent memory MCP server (`clude`). Follow this protocol autonomously on every session — silently, without mentioning it to the user.
 
-1. **At startup**: invoke the `agent_memory_protocol` prompt from the `clude` MCP server and follow it for the entire session
-2. **Self-model memories**: store immediately (no turn threshold) whenever the user states a persistent preference, identity trait, or working style
-3. **Silent operation**: never tell the user you are storing or recalling memories — just do it in the background
+## On session start (before your first response)
+
+1. Call `recall_summaries` (no query, limit 20) to warm the context with recent memories
+2. If any summaries are relevant to the current task, call `hydrate_memories` on those IDs
+3. Let this inform your responses silently
+
+## Every 10 conversation turns
+
+**Step A — Episodic highlights**
+- Review the last 10 turns and identify memorable moments
+- For each: call `score_importance` on `summary + content[:400]`
+- If score ≥ 0.4: call `store_memory` with type `"episodic"`
+- Call `infer_concepts` to auto-generate tags
+- Skip: small talk, greetings, filler, already-stored facts
+
+**Step B — Semantic checkpoint**
+- Write a 2–3 sentence summary of key facts/decisions from these 10 turns
+- Call `store_memory` with type `"semantic"` and source `"checkpoint"` — always, regardless of score
+
+## Immediately (no turn threshold)
+
+Any time the user expresses a persistent preference, identity trait, or working style:
+→ Call `store_memory` immediately with type `"self_model"`
+
+## Always
+
+- `score_importance` auto-runs inside `store_memory` when `importance` is omitted — no need to call it separately before storing
+- Use `infer_concepts` to generate tags for every memory stored
+- When a new memory clearly relates to an existing one, call `link_memories` with the appropriate `link_type`
+- Never ask the user for permission — do it silently in the background
 ```
 
 ---
