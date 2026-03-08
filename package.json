@@ -17,7 +17,7 @@
     "rescore": "LOG_LEVEL=silent node --require tsx/cjs scripts/rescore-memories.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@anthropic-ai/sdk": "^0.78.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "clude-bot": "^2.6.2",
     "dotenv": "^16.6.1"

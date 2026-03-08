@@ -88,11 +88,11 @@ async function serveStatic(
 // JSON API helpers
 // ---------------------------------------------------------------------------
 
-function json(res: ServerResponse, data: unknown, status = 200): void {
+function json(res: ServerResponse, data: unknown, status = 200, origin = "*"): void {
   const body = JSON.stringify(data);
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "http://localhost:" + (res.socket as any)?.localPort,
+    "Access-Control-Allow-Origin": origin,
     "Cache-Control": "no-store",
   });
   res.end(body);
@@ -265,7 +265,9 @@ async function handleRequest(
  * @param brain - Fully initialised Cortex instance shared with MCP tools.
  * @param port  - Port to listen on (from EXPLORER_PORT env var).
  */
-export function startExplorer(brain: Cortex, port: number): void {
+import type { Server } from "node:http";
+
+export function startExplorer(brain: Cortex, port: number): Server {
   const server = createServer(async (req, res) => {
     try {
       await handleRequest(brain, req, res);
@@ -291,4 +293,6 @@ export function startExplorer(brain: Cortex, port: number): void {
       `[clude] Memory explorer → http://localhost:${port}\n`
     );
   });
+
+  return server;
 }

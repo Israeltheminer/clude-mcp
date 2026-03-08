@@ -121,9 +121,7 @@ export async function main(): Promise<void> {
   const explorerPort = process.env.EXPLORER_PORT
     ? Number(process.env.EXPLORER_PORT)
     : null;
-  if (explorerPort) {
-    startExplorer(brain, explorerPort);
-  }
+  const explorerServer = explorerPort ? startExplorer(brain, explorerPort) : null;
 
   // -------------------------------------------------------------------------
   // 6. Shutdown — wire SIGINT/SIGTERM for graceful cleanup.
@@ -131,6 +129,7 @@ export async function main(): Promise<void> {
   //    The process exits immediately after — no async teardown needed.
   // -------------------------------------------------------------------------
   const shutdown = (): void => {
+    explorerServer?.close();
     brain.destroy();
     process.exit(0);
   };
