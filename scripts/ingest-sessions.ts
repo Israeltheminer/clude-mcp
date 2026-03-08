@@ -19,8 +19,12 @@
  *   --project <pat>    Only process sessions from projects matching this substring
  *   --window N         Turns per memory window (default: 10)
  *   --threshold N      Min importance score to store episodic memory (default: 0.4)
- *   --delay N          ms to wait between memory stores (default: 20000 for Voyage free tier 3 RPM)
  *   --dry-run          Preview what would be processed without storing anything
+ *
+ * Rate limiting:
+ *   Voyage free tier allows 3 requests/minute. Each store_memory call = 1 request
+ *   (clude-bot batches all fragments internally). A token-bucket rate limiter
+ *   throttles automatically — no manual --delay needed.
  *
  * State:
  *   Progress is saved to ~/.claude/clude-ingest-state.json so re-runs skip
@@ -68,6 +72,40 @@ async function scoreImportanceDirect(text: string): Promise<number> {
   return isNaN(score) ? 0.5 : Math.min(1, Math.max(0, score));
 }
 
+// ── Rate limiter ──────────────────────────────────────────────────────────────
+// Token-bucket: allows up to `maxRequests` calls in a rolling `windowMs` window.
+// Each call to .throttle() records a timestamp and waits if needed.
+
+class RateLimiter {
+  private readonly maxRequests: number;
+  private readonly windowMs: number;
+  private timestamps: number[] = [];
+
+  constructor(maxRequests: number, windowMs: number) {
+    this.maxRequests = maxRequests;
+    this.windowMs = windowMs;
+  }
+
+  async throttle(): Promise<void> {
+    const now = Date.now();
+    // Evict timestamps outside the rolling window
+    this.timestamps = this.timestamps.filter(t => now - t < this.windowMs);
+
+    if (this.timestamps.length >= this.maxRequests) {
+      // Wait until the oldest timestamp exits the window
+      const waitMs = this.windowMs - (now - this.timestamps[0]) + 10;
+      process.stdout.write(` [rate-limit: waiting ${(waitMs / 1000).toFixed(1)}s]`);
+      await new Promise(r => setTimeout(r, waitMs));
+      return this.throttle(); // re-check after waiting
+    }
+
+    this.timestamps.push(Date.now());
+  }
+}
+
+// Voyage free tier: 3 requests per minute. One request per store_memory call.
+const voyageLimiter = new RateLimiter(3, 60_000);
+
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
@@ -78,12 +116,8 @@ const LIMIT_IDX   = args.indexOf("--limit");
 const PROJECT_IDX = args.indexOf("--project");
 const WINDOW    = WINDOW_IDX  !== -1 ? (parseInt(args[WINDOW_IDX  + 1], 10) || 10)  : 10;
 const THRESHOLD = THRESH_IDX  !== -1 ? (parseFloat(args[THRESH_IDX + 1])    || 0.4) : 0.4;
-const DELAY_IDX = args.indexOf("--delay");
-const LIMIT     = LIMIT_IDX   !== -1 ? (parseInt(args[LIMIT_IDX   + 1], 10) || 0)     : 0;     // 0 = unlimited
+const LIMIT     = LIMIT_IDX   !== -1 ? (parseInt(args[LIMIT_IDX   + 1], 10) || 0)   : 0; // 0 = unlimited
 const PROJECT   = PROJECT_IDX !== -1 ? args[PROJECT_IDX + 1] : undefined;
-const DELAY_MS  = DELAY_IDX   !== -1 ? (parseInt(args[DELAY_IDX   + 1], 10) || 20000) : 20000; // Voyage free: 3 RPM
-
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const STATE_FILE = join(homedir(), ".claude", "clude-ingest-state.json");
@@ -192,7 +226,7 @@ function sourceLabel(filePath: string): string {
 
 async function main() {
   console.log(`clude session ingestion${DRY_RUN ? " [DRY RUN]" : ""}`);
-  console.log(`window=${WINDOW}  threshold=${THRESHOLD}  limit=${LIMIT || "none"}  project=${PROJECT ?? "all"}\n`);
+  console.log(`window=${WINDOW}  threshold=${THRESHOLD}  limit=${LIMIT || "none"}  project=${PROJECT ?? "all"}  rate=3 RPM\n`);
 
   const state = loadState();
   let files = collectSessionFiles();
@@ -251,21 +285,27 @@ async function main() {
       const firstUserMsg = window.find(t => t.role === "user")?.text ?? "";
       const windowSummary = `${sessionLabel}: ${firstUserMsg.slice(0, 80)}${firstUserMsg.length > 80 ? "…" : ""}`;
 
-      // ── Step A: score each user turn, store episodic highlights ───────────
-      for (const turn of window) {
-        if (turn.role !== "user") continue;
+      // ── Step A: score user turns in parallel, store episodic highlights ────
+      const userTurns = window.filter(t => t.role === "user");
 
-        const scoreInput = `${windowSummary} ${turn.text.slice(0, 400)}`;
-        let importance: number | undefined;
+      // Score all user turns concurrently (Anthropic Haiku calls, separate limit)
+      const scores = await Promise.all(
+        userTurns.map(async (turn) => {
+          const scoreInput = `${windowSummary} ${turn.text.slice(0, 400)}`;
+          try {
+            return { turn, importance: await scoreImportanceDirect(scoreInput) };
+          } catch {
+            return { turn, importance: undefined };
+          }
+        })
+      );
 
-        try {
-          importance = await scoreImportanceDirect(scoreInput);
-        } catch { /* fall through — store() will use heuristic */ }
-
+      for (const { turn, importance } of scores) {
         if (importance !== undefined && importance < THRESHOLD) continue;
 
         try {
           const tags = brain.inferConcepts(turn.text, source, []);
+          await voyageLimiter.throttle(); // respect 3 RPM before each store
           await brain.store({
             type: "episodic",
             content: `${sessionLabel}\n\nUser: ${turn.text}`,
@@ -275,7 +315,6 @@ async function main() {
             ...(importance !== undefined ? { importance } : {}),
           });
           memoriesStored++;
-          await sleep(DELAY_MS);
         } catch (err: any) {
           console.error(`\n[episodic] ${filePath}: ${err.message}`);
         }
@@ -290,6 +329,7 @@ async function main() {
 
       try {
         const tags = brain.inferConcepts(checkpointSummary, source, []);
+        await voyageLimiter.throttle(); // respect 3 RPM before each store
         await brain.store({
           type: "semantic",
           content: windowText.slice(0, 2000),
@@ -298,7 +338,6 @@ async function main() {
           tags,
         });
         memoriesStored++;
-        await sleep(DELAY_MS);
       } catch (err: any) {
         console.error(`\n[checkpoint] ${filePath}: ${err.message}`);
       }
