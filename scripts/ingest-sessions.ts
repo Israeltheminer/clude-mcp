@@ -357,6 +357,7 @@ async function main() {
 
     const windows = Math.ceil(turns.length / WINDOW);
     let sessionMemories = 0;
+    let prevCheckpointId: number | null = null; // for linking sequential windows
 
     // Split into windows of WINDOW turns
     for (let wi = 0; wi < turns.length; wi += WINDOW) {
@@ -402,12 +403,15 @@ async function main() {
       ].join("").trim();
 
       try {
-        const tags = await inferConceptsDirect(checkpointSummary + (best ? " " + best.turn.text.slice(0, 100) : ""));
+        // P5: Hybrid tagging — LLM domain categories merged with SDK entity concepts
+        const llmTags = await inferConceptsDirect(checkpointSummary + (best ? " " + best.turn.text.slice(0, 100) : ""));
+        const tags = brain.inferConcepts(checkpointSummary, source, llmTags);
+
         await voyageLimiter.throttle((waitSec) => {
           setStatus(`${prefix} ${sessionLabel}  win ${winNum}/${windows}  ⏸ rate limit — ${waitSec}s…`);
         });
         setStatus(`${prefix} ${sessionLabel}  win ${winNum}/${windows}  storing…`);
-        await brain.store({
+        const checkpointId = await brain.store({
           type: "semantic",
           content,
           summary: checkpointSummary,
@@ -416,6 +420,14 @@ async function main() {
           importance: best?.importance ?? 0.5,
         });
         sessionMemories++;
+
+        // P2: Link sequential windows within the same session as a temporal chain
+        if (checkpointId && prevCheckpointId) {
+          try {
+            await brain.link(prevCheckpointId, checkpointId, "follows", 0.8);
+          } catch { /* non-fatal: graph traversal still works without explicit links */ }
+        }
+        prevCheckpointId = checkpointId;
       } catch (err: any) {
         println(`  ✗ ${prefix} win ${winNum}: ${err.message}`);
       }

@@ -118,25 +118,37 @@ async function handleRequest(
 
   // ── API Routes ────────────────────────────────────────────────────────────
 
-  // GET /api/brain?limit=500
-  // Returns { nodes: Memory[] } — the format expected by explore.html's
-  // loadBrainData(). Normalises field names so the explorer renders correctly.
+  // GET /api/brain?limit=1000
+  // Uses recallSummaries (10x lighter than full recall — no content field).
+  // Returns { nodes } for the explorer graph/cards. Content is fetched on
+  // demand via GET /api/memory/:id when the user opens a provenance panel.
   if (path === "/api/brain") {
-    const limit = Math.min(Number(url.searchParams.get("limit") ?? 500), 1000);
-    const memories = await brain.recall({ limit });
-    const nodes = memories.map((m: any) => ({
+    const limit = Math.min(Number(url.searchParams.get("limit") ?? 1000), 2000);
+    const summaries = await brain.recallSummaries({ limit });
+    const nodes = summaries.map((m: any) => ({
       id: m.id,
-      type: m.type ?? m.memory_type ?? "episodic",
+      type: m.memory_type ?? "episodic",
       summary: m.summary ?? "",
-      content: m.content ?? "",
+      content: "",  // not included in summaries; fetched on demand
       tags: m.tags ?? [],
-      source: m.source ?? m.source_label ?? "",
+      source: m.source ?? "",
       importance: m.importance ?? 0.5,
-      decay: m.decay_factor ?? m.decay ?? 1,
-      createdAt: m.created_at ?? m.createdAt,
-      evidenceIds: m.evidence_ids ?? m.evidenceIds ?? [],
+      decay: m.decay_factor ?? 1,
+      createdAt: m.created_at,
+      evidenceIds: [],
     }));
     return json(res, { nodes, total: nodes.length });
+  }
+
+  // GET /api/memory/:id
+  // Hydrates a single memory's full content. Called by explore.html when the
+  // user opens a provenance panel and the node has no cached content.
+  const memoryGetMatch = path.match(/^\/api\/memory\/(\d+)$/);
+  if (memoryGetMatch && req.method === "GET") {
+    const id = Number(memoryGetMatch[1]);
+    const [mem] = await brain.hydrate([id]);
+    if (!mem) return json(res, { error: "Not found" }, 404);
+    return json(res, mem);
   }
 
   // GET /api/recall?query=...&limit=30
@@ -178,16 +190,18 @@ async function handleRequest(
     const memory: any = body?.memory ?? {};
     const history: Array<{ role: string; content: string }> = body?.history ?? [];
 
-    // Build a rich system prompt that includes this memory's full context
-    const memCtx = [
-      `Memory #${memory.id || "?"}`,
-      `Type: ${memory.memory_type || memory.type || "unknown"}`,
-      `Summary: ${memory.summary || ""}`,
-      `Content:\n${memory.content || ""}`,
-      `Tags: ${(memory.tags || []).join(", ")}`,
-      `Importance: ${((memory.importance ?? 0.5) * 100).toFixed(0)}%`,
-      `Created: ${memory.created_at || memory.createdAt || "?"}`,
-    ].join("\n");
+    // P4: Use brain.formatContext() for consistent LLM-ready memory formatting
+    // Normalise client-sent fields to match the Memory interface
+    const memoryObj = {
+      ...memory,
+      memory_type: memory.memory_type ?? memory.type ?? "semantic",
+      tags: memory.tags ?? [],
+      importance: memory.importance ?? 0.5,
+      decay_factor: memory.decay_factor ?? memory.decay ?? 1,
+      created_at: memory.created_at ?? memory.createdAt ?? "",
+      evidence_ids: memory.evidence_ids ?? memory.evidenceIds ?? [],
+    };
+    const memCtx = brain.formatContext([memoryObj as any]);
 
     const related: any[] = [
       ...(body?.ancestors || []),

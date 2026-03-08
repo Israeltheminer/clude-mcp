@@ -13,6 +13,7 @@
     "lint": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
     "ingest": "LOG_LEVEL=silent node --require tsx/cjs scripts/ingest-sessions.ts",
+    "dream": "LOG_LEVEL=silent node --require tsx/cjs scripts/dream.ts",
     "clear": "node --require tsx/cjs scripts/clear-memory.ts",
     "rescore": "LOG_LEVEL=silent node --require tsx/cjs scripts/rescore-memories.ts"
   },

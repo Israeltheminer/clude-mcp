@@ -864,7 +864,7 @@
     hideError('localError');
     showLoading('Loading memories...');
     try {
-      const res = await fetch('/api/brain?limit=500');
+      const res = await fetch('/api/brain?limit=1000');
       if (!res.ok) throw new Error('MCP server error (' + res.status + ')');
       const data = await res.json();
       localConnected = true;
@@ -891,7 +891,7 @@
   async function refreshLocal() {
     if (!localConnected) return;
     try {
-      const res = await fetch('/api/brain?limit=500');
+      const res = await fetch('/api/brain?limit=1000');
       if (res.ok) { const d = await res.json(); loadBrainData(d); }
     } catch (err) { console.warn('[clude] Refresh failed:', err?.message); }
   }
@@ -1515,7 +1515,23 @@
     chatHistory = [];
     document.getElementById('provChatThread').innerHTML = '';
     document.getElementById('provAskInput').value = '';
-    // Try API first (only for real data, not samples), fall back to local trace
+
+    // P6: If the node has no content (loaded via recallSummaries), hydrate it first
+    if (localConnected && !usingSampleData) {
+      const node = brainNodes.find(function(n) { return n.id === memoryId; });
+      if (node && !node.content) {
+        try {
+          const r = await fetch('/api/memory/' + memoryId);
+          if (r.ok) {
+            const full = await r.json();
+            node.content = full.content ?? full.summary ?? '';
+            node.evidenceIds = full.evidence_ids ?? [];
+          }
+        } catch (e) { console.warn('[clude] Hydrate failed:', e?.message); }
+      }
+    }
+
+    // Try API trace first (only for real data, not samples), fall back to local trace
     if (!usingSampleData) {
       try {
         const res = await fetch('/api/memory/' + memoryId + '/trace');
