@@ -19,6 +19,7 @@
  *   --project <pat>    Only process sessions from projects matching this substring
  *   --window N         Turns per memory window (default: 10)
  *   --threshold N      Min importance score to store episodic memory (default: 0.4)
+ *   --delay N          ms to wait between memory stores (default: 20000 for Voyage free tier 3 RPM)
  *   --dry-run          Preview what would be processed without storing anything
  *
  * State:
@@ -77,8 +78,12 @@ const LIMIT_IDX   = args.indexOf("--limit");
 const PROJECT_IDX = args.indexOf("--project");
 const WINDOW    = WINDOW_IDX  !== -1 ? (parseInt(args[WINDOW_IDX  + 1], 10) || 10)  : 10;
 const THRESHOLD = THRESH_IDX  !== -1 ? (parseFloat(args[THRESH_IDX + 1])    || 0.4) : 0.4;
-const LIMIT     = LIMIT_IDX   !== -1 ? (parseInt(args[LIMIT_IDX   + 1], 10) || 0)   : 0; // 0 = unlimited
+const DELAY_IDX = args.indexOf("--delay");
+const LIMIT     = LIMIT_IDX   !== -1 ? (parseInt(args[LIMIT_IDX   + 1], 10) || 0)     : 0;     // 0 = unlimited
 const PROJECT   = PROJECT_IDX !== -1 ? args[PROJECT_IDX + 1] : undefined;
+const DELAY_MS  = DELAY_IDX   !== -1 ? (parseInt(args[DELAY_IDX   + 1], 10) || 20000) : 20000; // Voyage free: 3 RPM
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const STATE_FILE = join(homedir(), ".claude", "clude-ingest-state.json");
@@ -270,6 +275,7 @@ async function main() {
             ...(importance !== undefined ? { importance } : {}),
           });
           memoriesStored++;
+          await sleep(DELAY_MS);
         } catch (err: any) {
           console.error(`\n[episodic] ${filePath}: ${err.message}`);
         }
@@ -292,6 +298,7 @@ async function main() {
           tags,
         });
         memoriesStored++;
+        await sleep(DELAY_MS);
       } catch (err: any) {
         console.error(`\n[checkpoint] ${filePath}: ${err.message}`);
       }

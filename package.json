@@ -12,7 +12,7 @@
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
-    "ingest": "node --require tsx/cjs scripts/ingest-sessions.ts"
+    "ingest": "node --require tsx/cjs scripts/ingest-sessions.ts 2>&1 | grep -v '^{'"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
