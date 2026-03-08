@@ -66,13 +66,18 @@ export async function createBrain(config: CortexConfig): Promise<Cortex> {
   try {
     // CortexV2 extends Cortex and is fully backwards-compatible.
     // Prefer it whenever available to unlock Memory Pack tools.
-    const { CortexV2 } = await import("clude-bot");
+    // Use require() instead of dynamic import() so this works in both the
+    // compiled CJS server and scripts run via tsx/cjs (which transforms static
+    // imports but leaves dynamic import() as ESM, breaking clude-bot's CJS-only export).
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { CortexV2 } = require("clude-bot");
     BrainClass = CortexV2 as unknown as typeof Cortex;
   } catch {
     // CortexV2 not available in this version of clude-bot.
     // Fall back silently to the base Cortex class.
     // Memory Pack tools (export_pack / import_pack) will return MethodNotFound.
-    const { Cortex: C } = await import("clude-bot");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Cortex: C } = require("clude-bot");
     BrainClass = C;
   }
 

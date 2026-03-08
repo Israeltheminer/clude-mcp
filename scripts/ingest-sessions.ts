@@ -31,8 +31,41 @@ import { join } from "path";
 import { homedir } from "os";
 import "dotenv/config";
 
+import Anthropic from "@anthropic-ai/sdk";
 import { createBrain } from "../src/brain.js";
 import { buildConfig } from "../src/config.js";
+
+// ── Direct Anthropic scorer ───────────────────────────────────────────────────
+// Bypass clude-bot's internal scorer which has a key injection issue.
+// Score 0–1: ask the model to rate importance as a number between 0 and 1.
+
+let _anthropic: Anthropic | null = null;
+
+function getAnthropicClient(): Anthropic | null {
+  if (_anthropic) return _anthropic;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+  _anthropic = new Anthropic({ apiKey });
+  return _anthropic;
+}
+
+async function scoreImportanceDirect(text: string): Promise<number> {
+  const client = getAnthropicClient();
+  if (!client) return 0.5; // heuristic fallback if no key
+
+  const response = await client.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 10,
+    messages: [{
+      role: "user",
+      content: `Rate how important this information is to remember long-term, on a scale from 0.0 to 1.0. Reply with a single decimal number only.\n\n${text.slice(0, 500)}`,
+    }],
+  });
+
+  const raw = (response.content[0] as any).text?.trim() ?? "0.5";
+  const score = parseFloat(raw);
+  return isNaN(score) ? 0.5 : Math.min(1, Math.max(0, score));
+}
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
@@ -221,8 +254,8 @@ async function main() {
         let importance: number | undefined;
 
         try {
-          importance = await brain.scoreImportance(scoreInput);
-        } catch { /* fall through — auto-scores inside store() */ }
+          importance = await scoreImportanceDirect(scoreInput);
+        } catch { /* fall through — store() will use heuristic */ }
 
         if (importance !== undefined && importance < THRESHOLD) continue;
 
