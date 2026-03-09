@@ -232,7 +232,7 @@
     }
     .stats-bar.visible { display: block; }
     .stats-inner {
-      display: flex; align-items: center; gap: 20px;
+      display: flex; align-items: center; justify-content: center; gap: 20px;
       padding: 12px 0;
       border-top: 1px solid var(--border);
       border-bottom: 1px solid var(--border);
@@ -376,11 +376,6 @@
       font-size: 8px; color: var(--text-faint);
       border: 1px solid var(--border);
       padding: 2px 8px; letter-spacing: 1px;
-    }
-    .card-score {
-      position: absolute; top: 12px; right: 14px;
-      font-size: 9px; color: var(--accent);
-      font-weight: 600; letter-spacing: 1px;
     }
     .card-actions {
       display: flex; gap: 6px; margin-top: 10px;
@@ -603,7 +598,7 @@
     }
     .action-bar.visible { display: block; }
     .action-inner {
-      display: flex; gap: 8px; align-items: center;
+      display: flex; gap: 8px; align-items: center; justify-content: center;
     }
     .action-label {
       font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
@@ -798,7 +793,7 @@
   let searchTimer = null;
   let displayedCount = 0;
   const PAGE_SIZE = 50;
-  const BRAIN_MAX = 500; // max nodes to send to 3D brain
+  const BRAIN_MAX = 250; // max nodes to send to 3D brain (matches brain MAX_NODES)
   let currentDisplayNodes = [];
   let isLoadingMore = false;
   /* ============= GUIDE TOGGLE ============= */
@@ -853,27 +848,114 @@
   }
 
   /* ============= LOCAL SERVER CONNECTION ============= */
+
+  // Streams /api/brain?stream=1, progressively rendering cards and the brain
+  // iframe. First NDJSON chunk triggers the initial render; subsequent chunks
+  // append nodes without clearing the display. A final full sort by trace-count
+  // runs after the stream closes to give accurate relevance ordering.
+  let _localStreamController = null;
+
+  // isRefresh=true: skip full loadBrainData on first chunk to avoid brain flash.
+  // Uses appendBrainData for every chunk so nodes are added incrementally.
+  async function streamBrainAPI(minImportance = 0, isRefresh = false) {
+    if (_localStreamController) _localStreamController.abort();
+    _localStreamController = new AbortController();
+
+    try {
+      const qs = minImportance > 0 ? `&min_importance=${(minImportance / 100).toFixed(2)}` : '';
+      const res = await fetch('/api/brain?stream=1' + qs, { signal: _localStreamController.signal });
+      if (!res.ok) throw new Error('MCP server error (' + res.status + ')');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let firstChunk = true;
+      let allReceived = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop(); // keep incomplete trailing line
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const chunk = JSON.parse(line);
+          allReceived.push(...chunk.nodes);
+          if (firstChunk && !isRefresh) {
+            // Initial connect: full brain setup on first chunk
+            firstChunk = false;
+            loadBrainData({ nodes: allReceived, total: chunk.total });
+          } else {
+            // Refresh or subsequent chunks: incremental append (no brain rebuild flash)
+            appendBrainData(chunk.nodes, chunk.total);
+          }
+        }
+      }
+
+      // After stream closes, re-sort by trace-count on full dataset and re-render
+      if (allReceived.length > 0) {
+        computeTraceCounts(allReceived);
+        allReceived.sort((a, b) => (b._traceCount || 0) - (a._traceCount || 0));
+        allNodes = allReceived;
+        brainNodes = allNodes;
+        currentDisplayNodes = filterByBrain(allNodes);
+        displayedCount = 0;
+        document.getElementById('cardsGrid').innerHTML = '';
+        renderMoreCards();
+        renderStats(brainNodes);
+        applyUrlParams();
+      }
+    } finally {
+      _localStreamController = null;
+    }
+  }
+
+  // Append new nodes from a streaming chunk without clearing the existing display.
+  function appendBrainData(newNodes, total) {
+    const existingIds = new Set(allNodes.map(n => n.id));
+    const novel = newNodes.filter(n => !existingIds.has(n.id));
+    if (!novel.length) return;
+    allNodes.push(...novel);
+    brainNodes = allNodes;
+    renderStats(brainNodes);
+    // When filters are active, currentDisplayNodes is a separate filtered array
+    // (filterByBrain returned a new array, not allNodes). Rebuild it so the new
+    // nodes get evaluated against the current filter state.
+    if (currentDisplayNodes !== allNodes) {
+      currentDisplayNodes = filterByBrain(allNodes);
+    }
+    // Send incremental update to brain iframe (uses spawnNode, no full rebuild)
+    const iframe = document.getElementById('brainFrame');
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage({ type: 'APPEND_BRAIN_DATA', payload: { nodes: novel, total } }, '*');
+    }
+  }
+
   async function connectLocal() {
     hideError('localError');
-    showLoading('Loading memories...');
+    document.getElementById('searchSection').classList.add('visible');
+    document.getElementById('cardsSection').classList.add('visible');
+    document.getElementById('cardsGrid').innerHTML =
+      '<div style="text-align:center;padding:40px;color:var(--text-faint);font-size:10px;letter-spacing:3px">LOADING MEMORIES…</div>';
     try {
-      const res = await fetch('/api/brain?limit=1000');
-      if (!res.ok) throw new Error('MCP server error (' + res.status + ')');
-      const data = await res.json();
+      await streamBrainAPI(brainFilters.threshold);
       localConnected = true;
       document.getElementById('btnSemantic').disabled = false;
       document.getElementById('btnSemantic').title = '';
       usingSampleData = false;
-      hideLoading();
-      loadBrainData(data);
       localRefreshTimer = setInterval(refreshLocal, 30000);
     } catch (err) {
-      hideLoading();
+      if (err.name === 'AbortError') return;
+      document.getElementById('cardsGrid').innerHTML = '';
+      document.getElementById('searchSection').classList.remove('visible');
+      document.getElementById('cardsSection').classList.remove('visible');
       showError('localError', err.message);
     }
   }
   function disconnectLocal() {
     localConnected = false;
+    if (_localStreamController) { _localStreamController.abort(); _localStreamController = null; }
     clearInterval(localRefreshTimer);
     localRefreshTimer = null;
     document.getElementById('btnSemantic').disabled = true;
@@ -883,25 +965,28 @@
   }
   async function refreshLocal() {
     if (!localConnected) return;
-    try {
-      const res = await fetch('/api/brain?limit=1000');
-      if (res.ok) { const d = await res.json(); loadBrainData(d); }
-    } catch (err) { console.warn('[clude] Refresh failed:', err?.message); }
+    // isRefresh=true: skip LOAD_BRAIN_DATA on first chunk to avoid brain rebuild flash
+    try { await streamBrainAPI(brainFilters.threshold, true); }
+    catch (err) { if (err.name !== 'AbortError') console.warn('[clude] Refresh failed:', err?.message); }
   }
 
   /* ============= FILE HANDLING ============= */
   const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
-  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
-  dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('dragover'); });
-  dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('dragover');
-    if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
-  });
-  fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) handleFile(e.target.files[0]);
-  });
+  if (dropZone) {
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('dragover'); });
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+    });
+  }
+  if (fileInput) {
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) handleFile(e.target.files[0]);
+    });
+  }
   function handleFile(file) {
     const sizeMB = (file.size / 1024 / 1024).toFixed(1);
     showLoading('Reading ' + file.name + ' (' + sizeMB + 'MB)...');
@@ -1081,7 +1166,10 @@
   }
   /* ============= BRAIN INTEGRATION ============= */
   function computeTraceCounts(nodes) {
-    // Build adjacency from loadedConnections + evidence_ids
+    // Build adjacency using tag co-occurrence as a proxy for connections
+    // (loadedConnections/evidenceIds are always empty in the current API).
+    // Cap per-tag bucket at 30 nodes to avoid O(n²) blowup on common tags.
+    const TAG_CAP = 30;
     const adj = new Map(); // id → Set of connected ids
     const addEdge = (a, b) => {
       if (!adj.has(a)) adj.set(a, new Set());
@@ -1089,7 +1177,23 @@
       adj.get(a).add(b);
       adj.get(b).add(a);
     };
-    for (const c of loadedConnections) addEdge(c.source_id, c.target_id);
+    // Tag co-occurrence: nodes sharing a tag are treated as connected
+    const tagToNodes = new Map();
+    for (const n of nodes) {
+      for (const tag of (n.tags || [])) {
+        if (!tagToNodes.has(tag)) tagToNodes.set(tag, []);
+        const bucket = tagToNodes.get(tag);
+        if (bucket.length < TAG_CAP) bucket.push(n.id);
+      }
+    }
+    for (const bucket of tagToNodes.values()) {
+      for (let i = 0; i < bucket.length; i++) {
+        for (let j = i + 1; j < bucket.length; j++) {
+          addEdge(bucket[i], bucket[j]);
+        }
+      }
+    }
+    // Also include explicit evidence links if available
     for (const n of nodes) {
       if (n.evidenceIds) for (const eid of n.evidenceIds) addEdge(n.id, eid);
     }
@@ -1131,11 +1235,12 @@
       pendingData = brainPayload;
     }
     renderStats(brainNodes);
-    currentDisplayNodes = brainNodes;
+    currentDisplayNodes = filterByBrain(brainNodes);
     displayedCount = 0;
     document.getElementById('cardsGrid').innerHTML = '';
     renderMoreCards();
     showDataUI();
+    applyUrlParams();
   }
   function sendToBrain(data) {
     const iframe = document.getElementById('brainFrame');
@@ -1150,40 +1255,18 @@
     iframe.contentWindow.postMessage({ type: 'RESET_HIGHLIGHTS' }, '*');
   }
   function focusInBrain(id) {
-    // Try brain iframe focus
+    // Send focus to brain iframe and scroll it into view
     const iframe = document.getElementById('brainFrame');
-    if (iframe) iframe.contentWindow.postMessage({ type: 'FOCUS_NODE', id }, '*');
-    
-    // Also highlight the card visually
+    if (iframe) {
+      iframe.contentWindow.postMessage({ type: 'FOCUS_NODE', id }, '*');
+      iframe.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    // Pulse the matching card outline as a subtle indicator (no scroll)
     document.querySelectorAll('.memory-card').forEach(c => c.style.outline = '');
     const card = document.querySelector('.memory-card[onclick*="' + id + '"]');
     if (card) {
       card.style.outline = '2px solid var(--accent)';
-      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
       setTimeout(() => card.style.outline = '', 3000);
-    } else {
-      // Card not rendered yet (paginated) — find and show it
-      const idx = currentDisplayNodes.findIndex(n => n.id === id);
-      if (idx >= 0 && idx >= displayedCount) {
-        // Render up to that point
-        const grid = document.getElementById('cardsGrid');
-        const end = Math.min(idx + 5, currentDisplayNodes.length);
-        let html = '';
-        for (let i = displayedCount; i < end; i++) {
-          html += renderCardHtml(currentDisplayNodes[i]);
-        }
-        grid.insertAdjacentHTML('beforeend', html);
-        displayedCount = end;
-        // Now scroll to it
-        setTimeout(() => {
-          const newCard = document.querySelector('.memory-card[onclick*="' + id + '"]');
-          if (newCard) {
-            newCard.style.outline = '2px solid var(--accent)';
-            newCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            setTimeout(() => newCard.style.outline = '', 3000);
-          }
-        }, 100);
-      }
     }
   }
   window.addEventListener('message', (e) => {
@@ -1193,32 +1276,119 @@
         sendToBrain(pendingData);
         pendingData = null;
       }
+      // Restore filter sliders from URL after brain is ready
+      const { threshold, imp, decay } = getUrlParams();
+      if (threshold || imp || decay) {
+        brainFilters = { threshold, imp, decay };
+        sendFiltersToBrain();
+      }
     }
-    // Brain node clicked → open provenance/chat overlay in explore
     if (e.data?.type === 'NODE_SELECTED' && e.data.id) {
       openProvenance(e.data.id);
     }
+    if (e.data?.type === 'FILTER_CHANGED') {
+      const prevThreshold = brainFilters.threshold;
+      brainFilters = { threshold: e.data.threshold || 0, imp: e.data.imp || 0, decay: e.data.decay || 0 };
+      pushUrlParams();
+      // If threshold changed, re-slice brainNodes client-side and resend to brain —
+      // no server round-trip needed since we already hold all nodes up to limit=1000.
+      if (brainFilters.threshold !== prevThreshold && brainNodes.length) {
+        const minImp = brainFilters.threshold / 100;
+        const filtered = brainNodes
+          .filter(n => (n.importance || 0) >= minImp)
+          .sort((a, b) => (b.importance || 0) - (a.importance || 0))
+          .slice(0, BRAIN_MAX);
+        sendToBrain({ nodes: filtered, total: filtered.length });
+      }
+      // Re-apply current search/filter to card list
+      const q = document.getElementById('searchInput').value;
+      if (q.trim()) searchMemories(q); else applyBrainFiltersToCards();
+    }
   });
+  /* ============= URL PARAMS ============= */
+  let brainFilters = { threshold: 0, imp: 0, decay: 0 };
+
+  function getUrlParams() {
+    const p = new URLSearchParams(window.location.search);
+    return {
+      q: p.get('q') || '',
+      mode: p.get('mode') || 'keyword',
+      threshold: parseInt(p.get('threshold') || '0', 10),
+      imp: parseInt(p.get('imp') || '0', 10),
+      decay: parseInt(p.get('decay') || '0', 10),
+    };
+  }
+  function pushUrlParams() {
+    const q = document.getElementById('searchInput').value;
+    const p = new URLSearchParams();
+    if (q) p.set('q', q);
+    if (searchMode !== 'keyword') p.set('mode', searchMode);
+    if (brainFilters.threshold) p.set('threshold', brainFilters.threshold);
+    if (brainFilters.imp) p.set('imp', brainFilters.imp);
+    if (brainFilters.decay) p.set('decay', brainFilters.decay);
+    const qs = p.toString();
+    history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+  }
+  function applyUrlParams() {
+    const { q, mode, threshold, imp, decay } = getUrlParams();
+    if (mode && mode !== searchMode) {
+      const semanticBtn = document.getElementById('btnSemantic');
+      if (mode === 'keyword' || !semanticBtn.disabled) setSearchMode(mode);
+    }
+    if (q) {
+      document.getElementById('searchInput').value = q;
+      searchMemories(q);
+    }
+    if (threshold || imp || decay) {
+      brainFilters = { threshold, imp, decay };
+      sendFiltersToBrain();
+      // Apply to card list too — q path already calls searchMemories which filters
+      if (!q) applyBrainFiltersToCards();
+    }
+  }
+  function sendFiltersToBrain() {
+    const iframe = document.getElementById('brainFrame');
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage({ type: 'SET_FILTERS', ...brainFilters }, '*');
+    }
+  }
   /* ============= SEARCH ============= */
   document.getElementById('searchInput').addEventListener('input', (e) => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => searchMemories(e.target.value), 300);
+    searchTimer = setTimeout(() => {
+      searchMemories(e.target.value);
+      pushUrlParams();
+    }, 300);
   });
   function setSearchMode(mode) {
     searchMode = mode;
     document.getElementById('btnKeyword').classList.toggle('active', mode === 'keyword');
     document.getElementById('btnSemantic').classList.toggle('active', mode === 'semantic');
+    pushUrlParams();
     const query = document.getElementById('searchInput').value;
     if (query.trim()) searchMemories(query);
   }
+  function filterByBrain(nodes) {
+    const { imp, decay } = brainFilters;
+    if (!imp && !decay) return nodes;
+    return nodes.filter(n =>
+      (n.importance || 0) * 100 >= imp &&
+      (n.decay ?? 1) * 100 >= decay
+    );
+  }
+  function applyBrainFiltersToCards() {
+    const filtered = filterByBrain(allNodes);
+    renderMemoryCards(filtered);
+    const { imp, decay } = brainFilters;
+    const label = [imp && `imp ≥${imp}%`, decay && `decay ≥${decay}%`].filter(Boolean).join(', ');
+    document.getElementById('searchCount').textContent = label
+      ? filtered.length + ' of ' + allNodes.length + ' (filtered: ' + label + ')'
+      : '';
+  }
   async function searchMemories(query) {
     if (!query.trim()) {
-      currentDisplayNodes = allNodes;
-      displayedCount = 0;
-      document.getElementById('cardsGrid').innerHTML = '';
-      renderMoreCards();
+      applyBrainFiltersToCards();
       resetBrainHighlights();
-      document.getElementById('searchCount').textContent = '';
       return;
     }
     if (searchMode === 'semantic' && (apiKey || localConnected)) {
@@ -1262,11 +1432,12 @@
   }
   function keywordSearch(query) {
     const q = query.toLowerCase();
-    const results = allNodes.filter(n =>
+    const matched = allNodes.filter(n =>
       (n.summary || '').toLowerCase().includes(q) ||
       (n.content || '').toLowerCase().includes(q) ||
       (n.tags || []).some(t => t.toLowerCase().includes(q))
     );
+    const results = filterByBrain(matched);
     renderMemoryCards(results);
     highlightInBrain(results.map(n => n.id));
     document.getElementById('searchCount').textContent = results.length + ' result' + (results.length !== 1 ? 's' : '');
@@ -1288,11 +1459,11 @@
     }).join('  ');
     document.getElementById('statsInner').innerHTML =
       '<span class="stat"><span class="v">' + nodes.length + '</span> memories</span>' +
-      '<span class="stat-sep"></span>' +
+      '<span class="stat-sep" aria-hidden="true">·</span>' +
       '<span class="stat">' + typeStr + '</span>' +
-      '<span class="stat-sep"></span>' +
+      '<span class="stat-sep" aria-hidden="true">·</span>' +
       '<span class="stat">avg imp <span class="v">' + avgImp + '</span></span>' +
-      '<span class="stat-sep"></span>' +
+      '<span class="stat-sep" aria-hidden="true">·</span>' +
       '<span class="stat" title="Vitality: 100% = fresh (no decay applied yet). Decreases over time as memories age.">vitality <span class="v">' + avgDecay + '%</span></span>';
   }
   function renderCardHtml(n, showScores) {
@@ -1300,20 +1471,18 @@
     const typeName = TYPE_LABELS[n.type] || (n.type || 'episodic').replace('_', ' ');
     const age = timeAgo(n.createdAt);
     const tags = (n.tags || []).slice(0, 5).map(t => '<span class="card-tag">' + esc(t) + '</span>').join('');
-    const scoreHtml = showScores && n._score ? '<span class="card-score">' + (n._score).toFixed(2) + '</span>' : '';
+    const scoreHtml = showScores && n._score ? ' · <span style="color:var(--accent);font-weight:600">' + (n._score).toFixed(2) + '</span>' : '';
     const hasEvidence = (n.evidenceIds && n.evidenceIds.length > 0);
     return '<div class="memory-card" data-type="' + esc(n.type) + '" onclick="openProvenance(' + n.id + ')">' +
-      scoreHtml +
       '<div class="card-header">' +
         '<span class="card-type" data-type="' + esc(n.type) + '">' + esc(typeName) + '</span>' +
         '<span class="card-id">' + age + '</span>' +
-        '<span class="card-id" style="margin-left:12px">imp ' + (n.importance || 0).toFixed(2) + ' · vitality ' + ((n.decay ?? 1) * 100).toFixed(0) + '%</span>' +
+        '<span class="card-id" style="margin-left:12px">imp ' + (n.importance || 0).toFixed(2) + ' · vitality ' + ((n.decay ?? 1) * 100).toFixed(0) + '%' + scoreHtml + '</span>' +
       '</div>' +
       '<div class="card-summary">' + esc(n.summary || '') + '</div>' +
       (tags ? '<div class="card-tags">' + tags + '</div>' : '') +
       '<div class="card-actions">' +
-        '<button onclick="event.stopPropagation(); openProvenance(' + n.id + ')">&#x2B95; Trace</button>' +
-        '<button onclick="event.stopPropagation(); focusInBrain(' + n.id + ')">&#x25CE; Focus</button>' +
+        '<button onclick="event.stopPropagation(); focusInBrain(' + n.id + ')" title="Highlight this node in the neural map above">&#x25CE; Focus in map</button>' +
         (n._traceCount ? '<span style="font-size:9px;color:var(--accent);margin-left:auto">⛓ ' + n._traceCount + ' traces</span>' : '') +
         (hasEvidence ? '<span style="font-size:9px;color:var(--accent)">🔗 ' + n.evidenceIds.length + '</span>' : '') +
       '</div>' +
@@ -1362,12 +1531,27 @@
   // Auto-connect on load — prefer saved API key, fall back to local MCP server
   document.addEventListener('DOMContentLoaded', function() {
     const saved = localStorage.getItem('explorer_api_key');
-    if (saved) {
-      const input = document.getElementById('apiKeyInput');
-      if (input) input.value = saved;
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    if (saved && apiKeyInput) {
+      apiKeyInput.value = saved;
       connectWithApiKey();
     } else {
       connectLocal();
+    }
+
+    // Forward wheel events from the brain-frame-wrap to the brain iframe so that
+    // scrolling zooms the 3D scene instead of scrolling the page.
+    // This is needed because the parent page has focus in PAN mode (user never clicks
+    // inside the iframe), so wheel events hit the parent scroll handler instead.
+    const brainWrap = document.querySelector('.brain-frame-wrap');
+    if (brainWrap) {
+      brainWrap.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const iframe = document.getElementById('brainFrame');
+        if (iframe && iframe.contentWindow) {
+          iframe.contentWindow.postMessage({ type: 'WHEEL_ZOOM', delta: e.deltaY, ctrlKey: e.ctrlKey }, '*');
+        }
+      }, { passive: false });
     }
   });
 /* ============= EXPORT ============= */

@@ -118,13 +118,20 @@ async function handleRequest(
 
   // ── API Routes ────────────────────────────────────────────────────────────
 
-  // GET /api/brain?min_importance=0.0
+  // GET /api/brain?min_importance=0.0[&stream=1]
   // Uses recallSummaries (10x lighter than full recall — no content field).
   // Returns { nodes } for the explorer graph/cards. Content is fetched on
   // demand via GET /api/memory/:id when the user opens a provenance panel.
   // No hard node cap — min_importance is the natural filter.
+  //
+  // ?stream=1  →  NDJSON chunked response; each line is:
+  //   { nodes: Node[], total: number }
+  // Allows the client to start rendering after the first 100 nodes rather
+  // than waiting for the full payload. A setImmediate tick between each
+  // batch yields the event loop so TCP can flush each chunk individually.
   if (path === "/api/brain") {
     const minImportance = Number(url.searchParams.get("min_importance") ?? 0);
+    const stream = url.searchParams.get("stream") === "1";
     const summaries = await brain.recallSummaries({
       limit: 10000,
       minImportance: minImportance > 0 ? minImportance : undefined,
@@ -141,6 +148,31 @@ async function handleRequest(
       createdAt: m.created_at,
       evidenceIds: [],
     }));
+
+    if (stream) {
+      res.writeHead(200, {
+        "Content-Type": "application/x-ndjson",
+        "Transfer-Encoding": "chunked",
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-store",
+      });
+      const BATCH = 100;
+      const tick = () => new Promise<void>(r => setImmediate(r));
+      if (nodes.length === 0) {
+        res.write(JSON.stringify({ nodes: [], total: 0 }) + "\n");
+      } else {
+        for (let i = 0; i < nodes.length; i += BATCH) {
+          res.write(JSON.stringify({
+            nodes: nodes.slice(i, i + BATCH),
+            total: nodes.length,
+          }) + "\n");
+          await tick(); // yield event loop so each batch flushes as its own TCP segment
+        }
+      }
+      res.end();
+      return;
+    }
+
     return json(res, { nodes, total: nodes.length });
   }
 

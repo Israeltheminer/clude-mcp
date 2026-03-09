@@ -55,31 +55,92 @@
  * the format manually.
  */
 
+import Anthropic from "@anthropic-ai/sdk";
 import type { Cortex, Memory } from "clude-bot";
 import { ok, type ToolResult } from "../../helpers.js";
 
 // ---------------------------------------------------------------------------
-// infer_concepts
+// infer_concepts — LLM-based, domain-agnostic
 // ---------------------------------------------------------------------------
+
+/**
+ * Extract concept tags from a memory summary using claude-haiku.
+ *
+ * No predefined ontology — the model reads what is actually in the text and
+ * returns 3–6 lowercase snake_case tags specific to that content. Works for
+ * any domain: code, cooking, music, research, personal notes, etc.
+ *
+ * Falls back to an empty array if ANTHROPIC_API_KEY is not set or the call
+ * fails, so the tool never throws.
+ */
+async function inferConceptsLLM(
+  summary: string,
+  source: string,
+  tags: string[]
+): Promise<string[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return [];
+
+  try {
+    const anthropic = new Anthropic({ apiKey });
+
+    const tagHint =
+      tags.length > 0
+        ? `\nExisting tags (merge relevant ones): ${tags.slice(0, 10).join(", ")}`
+        : "";
+    const sourceHint = source ? `\nSource context: ${source}` : "";
+
+    const { content } = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 80,
+      messages: [
+        {
+          role: "user",
+          content:
+            `Extract 3–6 concept tags from this memory. ` +
+            `Rules: lowercase snake_case only (e.g. "pasta_recipe", "merge_conflict", "sleep_tracking"). ` +
+            `Be specific to the actual content — no generic labels. ` +
+            `Return a JSON array of strings, nothing else.` +
+            sourceHint +
+            tagHint +
+            `\n\nMemory: ${summary.slice(0, 600)}`,
+        },
+      ],
+    });
+
+    const text = (content[0] as { text: string }).text?.trim() ?? "[]";
+    const match = text.match(/\[[\s\S]*?\]/);
+    if (!match) return [];
+
+    const parsed: unknown = JSON.parse(match[0]);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((t): t is string => typeof t === "string" && /^[a-z][a-z0-9_]{1,39}$/.test(t))
+      .slice(0, 8);
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Handle the `infer_concepts` tool call.
  *
- * Runs the built-in ontology scanner against the provided text and returns
- * an array of concept strings. The call is synchronous (no await) because
- * the SDK method is pure — it does no I/O.
+ * Delegates to claude-haiku for domain-agnostic tag extraction — no hardcoded
+ * ontology, no domain assumptions. Returns an empty array (never throws) when
+ * ANTHROPIC_API_KEY is unavailable.
  *
- * @param brain - Initialised Cortex instance (used for the SDK method).
+ * @param brain - Initialised Cortex instance (unused).
  * @param args  - Raw MCP arguments. `summary` and `source` are required.
  * @returns MCP tool result containing `{ concepts: string[] }`.
  */
-export function handleInferConcepts(
+export async function handleInferConcepts(
   brain: Cortex,
   args: Record<string, unknown>
-): ToolResult {
-  const concepts = brain.inferConcepts(
-    String(args.summary),
-    String(args.source),
+): Promise<ToolResult> {
+  const concepts = await inferConceptsLLM(
+    String(args.summary ?? ""),
+    String(args.source ?? ""),
     (args.tags as string[]) ?? []
   );
   return ok({ concepts });

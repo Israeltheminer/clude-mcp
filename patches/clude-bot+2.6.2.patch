@@ -1,0 +1,44 @@
+diff --git a/node_modules/clude-bot/dist/core/memory.js b/node_modules/clude-bot/dist/core/memory.js
+index 920be41..c04d8da 100644
+--- a/node_modules/clude-bot/dist/core/memory.js
++++ b/node_modules/clude-bot/dist/core/memory.js
+@@ -114,34 +114,11 @@ const log = (0, logger_1.createChildLogger)('memory');
+  * Concepts are additive to freeform tags, not a replacement.
+  */
+ function inferConcepts(summary, source, tags) {
+-    const concepts = [];
+-    const lower = summary.toLowerCase();
+-    const tagSet = new Set(tags.map(t => t.toLowerCase()));
+-    if (source === 'market' || tagSet.has('price') || /price|pump|dump|ath|market|volume/.test(lower))
+-        concepts.push('market_event');
+-    if (/whale|holder|seller|buyer|exit|accumula/.test(lower))
+-        concepts.push('holder_behavior');
+-    if (source === 'reflection' || source === 'emergence' || /myself|i am|i feel|identity|who i/.test(lower))
+-        concepts.push('self_insight');
+-    if (source === 'mention' || /tweet|reply|said|asked|mentioned|dm/.test(lower))
+-        concepts.push('social_interaction');
+-    if (/pattern|trend|recurring|always|usually|community/.test(lower))
+-        concepts.push('community_pattern');
+-    if (/token|sol|mint|swap|transfer|liquidity|staking/.test(lower))
+-        concepts.push('token_economics');
+-    if (/mood|sentiment|feel|vibe|energy|atmosphere/.test(lower))
+-        concepts.push('sentiment_shift');
+-    if (tagSet.has('first_interaction') || /returning|regular|again|came back/.test(lower))
+-        concepts.push('recurring_user');
+-    if (/whale|large|massive|huge|big (buy|sell)/.test(lower))
+-        concepts.push('whale_activity');
+-    if (/price|chart|candle|volume|mcap|cap/.test(lower))
+-        concepts.push('price_action');
+-    if (/engagement|likes|retweet|viral|reach|impressions/.test(lower))
+-        concepts.push('engagement_pattern');
+-    if (source === 'emergence' || /becoming|evolving|changed|grew|identity/.test(lower))
+-        concepts.push('identity_evolution');
+-    return [...new Set(concepts)];
++    // Intentionally returns [] — concept extraction is handled by the MCP
++    // infer_concepts tool (LLM-based) and stored in the tags column instead.
++    // Keeping this neutral prevents duplicate/conflicting labels in the
++    // concepts column without removing the call site.
++    return [];
+ }
+ // ---- STORE ---- //
+ async function storeMemory(opts) {

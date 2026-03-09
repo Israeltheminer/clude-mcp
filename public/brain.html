@@ -381,6 +381,18 @@
         justify-content: center;
         transition: all 0.2s;
       }
+      #btnMode {
+        width: auto;
+        padding: 0 8px;
+        font-size: 8px;
+        letter-spacing: 2px;
+        font-weight: 700;
+        gap: 5px;
+      }
+      #btnMode .mode-dot {
+        width: 5px; height: 5px; border-radius: 50%;
+        background: currentColor; flex-shrink: 0;
+      }
 
       .ctrl-btn:hover {
         border-color: rgba(0, 0, 0, 0.2);
@@ -1146,6 +1158,8 @@
 
     <div class="hud hud-br">
       <div class="controls">
+        <button class="ctrl-btn active" id="btnMode" title="Navigate mode — click to switch to Select mode"><span
+            class="mode-dot"></span>PAN</button>
         <button class="ctrl-btn" id="btnRotate" title="Auto-rotate">&#x27F3;</button>
         <button class="ctrl-btn" id="btnReset" title="Reset camera">&#x25CB;</button>
       </div>
@@ -1222,6 +1236,7 @@
         document.querySelector( 'nav' ).style.display='none';
         const psyche=document.getElementById( 'psycheCard' );
         if ( psyche ) psyche.style.display='none';
+
         document.documentElement.style.background='transparent';
         document.body.style.background='transparent';
       }
@@ -1773,7 +1788,7 @@
             knownIds.add( node.id );
           }
         }
-        buildEdges(); buildHitMeshes(); updateStats();
+        buildHitMeshes(); applyFilters();
       }
 
       /* ============= BUILD EDGES ============= */
@@ -1840,13 +1855,25 @@
       scene.add( highlightRing );
 
       /* ============= INTERACTION ============= */
+        let navMode=true; // navigate mode by default — no accidental node clicks
+        let pointerDownX=0, pointerDownY=0;
+
       addEventListener( 'pointermove', e => {
         pointer.x=( e.clientX/innerWidth )*2-1;
         pointer.y=-( e.clientY/innerHeight )*2+1;
       } );
 
+        addEventListener( 'pointerdown', e => {
+          pointerDownX=e.clientX;
+          pointerDownY=e.clientY;
+        } );
+
       addEventListener( 'click', e => {
         if ( e.target.closest( '.hud,.filter-bar,.detail,.ctrl-btn,.legend-item,nav,.toast-container,.toast,.psyche-card' ) ) return;
+        if ( navMode ) return;
+        // Ignore if this was a drag (pan/rotate), not a true click
+        const dx=e.clientX-pointerDownX, dy=e.clientY-pointerDownY;
+        if ( Math.sqrt( dx*dx+dy*dy )>5 ) return;
         if ( hoveredNode ) selectNode( hoveredNode ); else deselectNode();
       } );
 
@@ -1856,7 +1883,7 @@
         raycaster.setFromCamera( pointer, camera );
         const hits=raycaster.intersectObjects( hitMeshes.filter( m => m.visible ), false );
         hoveredNode=hits.length? hits[ 0 ].object.userData.node:null;
-        if ( hoveredNode&&!selectedNode ) {
+        if ( hoveredNode&&!selectedNode&&!navMode ) {
           document.body.style.cursor='pointer';
           ringMat.color.copy( TYPE_COLORS[ hoveredNode.type ] );
           highlightRing.scale.setScalar( 8 );
@@ -1864,7 +1891,7 @@
           highlightRing.lookAt( camera.position );
           highlightRing.visible=true;
         } else if ( !selectedNode ) {
-          document.body.style.cursor='default';
+          document.body.style.cursor=navMode? '':'crosshair';
           highlightRing.visible=false;
         }
       }
@@ -1885,9 +1912,29 @@
         showDetail( node );
       }
 
+        /* focusNode: fly camera + highlight ring WITHOUT triggering showDetail/NODE_SELECTED.
+           Used by the FOCUS_NODE postMessage from the parent so "Focus in map" doesn't
+           accidentally open the provenance overlay. */
+        function focusNode( node ) {
+          if ( !selectedNode ) {
+            savedCamPos=camera.position.clone();
+            savedCamTarget=controls.target.clone();
+            wasAutoRotating=controls.autoRotate;
+          }
+          selectedNode=node; controls.autoRotate=false;
+          const dir=new THREE.Vector3().subVectors( camera.position, controls.target ).normalize();
+          targetFocus=new THREE.Vector3( node.x, node.y, node.z );
+          targetCamPos=targetFocus.clone().add( dir.multiplyScalar( 60 ) );
+          node.fireGlow=3.5;
+          ringMat.color.copy( TYPE_COLORS[ node.type ]||new THREE.Color( 0x111111 ) );
+          highlightRing.visible=true;
+        }
+
       function deselectNode() {
         selectedNode=null;
-        if ( savedCamPos&&savedCamTarget ) {
+        if ( navMode ) {
+          targetCamPos=null; targetFocus=null;
+        } else if ( savedCamPos&&savedCamTarget ) {
           targetCamPos=savedCamPos.clone(); targetFocus=savedCamTarget.clone();
         } else {
           targetCamPos=new THREE.Vector3( 0, 80, 380 );
@@ -2013,6 +2060,16 @@
         if ( e.key==='Enter'&&!e.shiftKey ) dChatAsk();
       } );
 
+      /* ============= LEGEND ============= */
+      // Hide legend rows for types that have 0 nodes in the current dataset.
+      function updateLegend() {
+        const typeCounts={};
+        for ( const n of memoryNodes ) typeCounts[ n.type ]=(typeCounts[ n.type ]||0)+1;
+        document.querySelectorAll( '.legend-item[data-type]' ).forEach( item => {
+          item.style.display=(typeCounts[ item.dataset.type ]||0)>0 ? '' : 'none';
+        } );
+      }
+
       /* ============= FILTERS ============= */
       function applyFilters() {
         for ( const n of memoryNodes ) {
@@ -2031,10 +2088,16 @@
       } );
 
       let thresholdFetchTimer=null;
+        function notifyFilters() {
+          if ( embeddedMode ) {
+            try { window.parent.postMessage( { type: 'FILTER_CHANGED', threshold: currentThreshold, imp: impThreshold, decay: decayThreshold }, '*' ); } catch { }
+          }
+        }
+
       document.getElementById( 'thresholdSlider' ).addEventListener( 'input', e => {
         currentThreshold=+e.target.value;
         document.getElementById( 'thresholdVal' ).textContent=currentThreshold > 0 ? currentThreshold+'%+' : 'all';
-        // Debounce re-fetch by 600ms so slider dragging doesn't spam the server
+        notifyFilters();
         clearTimeout( thresholdFetchTimer );
         thresholdFetchTimer=setTimeout( () => {
           initialLoadDone=false;
@@ -2045,14 +2108,32 @@
       document.getElementById( 'impSlider' ).addEventListener( 'input', e => {
         impThreshold=+e.target.value;
         document.getElementById( 'impVal' ).textContent=impThreshold+'%';
+        notifyFilters();
         applyFilters();
       } );
 
       document.getElementById( 'decaySlider' ).addEventListener( 'input', e => {
         decayThreshold=+e.target.value;
         document.getElementById( 'decayVal' ).textContent=decayThreshold+'%';
+        notifyFilters();
         applyFilters();
       } );
+
+        const btnMode=document.getElementById( 'btnMode' );
+        btnMode.addEventListener( 'click', () => {
+          navMode=!navMode;
+          controls.enablePan=navMode;
+          if ( navMode ) {
+            targetFocus=null; targetCamPos=null;
+          }
+          btnMode.classList.toggle( 'active', navMode );
+          btnMode.title=navMode
+            ? 'Navigate mode — click to switch to Select mode'
+            :'Select mode — click to switch to Navigate mode';
+          btnMode.innerHTML='<span class="mode-dot"></span>'+( navMode? 'PAN':'SEL' );
+          document.body.style.cursor=navMode? '':'crosshair';
+          if ( navMode ) { hoveredNode=null; highlightRing.visible=false; }
+        } );
 
       const btnRotate=document.getElementById( 'btnRotate' );
       btnRotate.classList.add( 'active' );
@@ -2341,9 +2422,21 @@
             if ( d.total ) totalMemoryCount=d.total;
             if ( d.nodes?.length ) {
               buildMemoryNodes( d.nodes );
+              updateLegend();
               document.getElementById( 'loading' ).classList.add( 'gone' );
               initialLoadDone=true;
             }
+            break;
+          }
+          // Incremental update from streaming load — adds new nodes via spawnNode
+          // without a full rebuild (no flicker, no position reset).
+          case 'APPEND_BRAIN_DATA': {
+            const d=e.data.payload;
+            if ( d.total ) totalMemoryCount=d.total;
+            for ( const rawNode of ( d.nodes||[] ) ) {
+              if ( !knownIds.has( rawNode.id ) ) spawnNode( rawNode );
+            }
+            updateLegend();
             break;
           }
           case 'HIGHLIGHT_NODES': {
@@ -2358,9 +2451,41 @@
           case 'RESET_HIGHLIGHTS':
             applyFilters();
             break;
+          case 'WHEEL_ZOOM': {
+            // Dispatch a real WheelEvent on the OrbitControls canvas so its
+            // internal dolly logic fires — directly setting camera.position is
+            // overridden by controls.update() on the next animation frame.
+            renderer.domElement.dispatchEvent(
+              new WheelEvent( 'wheel', { deltaY: e.data.delta, deltaMode: 0, bubbles: false } )
+            );
+            break;
+          }
           case 'FOCUS_NODE': {
             const node=nodeMap[ e.data.id ];
-            if ( node ) selectNode( node );
+            if ( node ) focusNode( node );
+            break;
+          }
+          case 'SET_FILTERS': {
+            const f=e.data;
+            if ( f.threshold!=null ) {
+              currentThreshold=+f.threshold;
+              document.getElementById( 'thresholdSlider' ).value=currentThreshold;
+              document.getElementById( 'thresholdVal' ).textContent=currentThreshold>0? currentThreshold+'%+':'all';
+              // In embedded mode the parent re-sends filtered LOAD_BRAIN_DATA when threshold
+              // changes — no direct server fetch needed (avoids a duplicate request).
+              if ( !embeddedMode ) { initialLoadDone=false; fetchBrain(); }
+            }
+            if ( f.imp!=null ) {
+              impThreshold=+f.imp;
+              document.getElementById( 'impSlider' ).value=impThreshold;
+              document.getElementById( 'impVal' ).textContent=impThreshold+'%';
+            }
+            if ( f.decay!=null ) {
+              decayThreshold=+f.decay;
+              document.getElementById( 'decaySlider' ).value=decayThreshold;
+              document.getElementById( 'decayVal' ).textContent=decayThreshold+'%';
+            }
+            applyFilters();
             break;
           }
         }
@@ -2370,10 +2495,14 @@
       let initialLoadDone=false;
 
       let currentThreshold=0;
+        let _fetchController=null; // AbortController for in-flight fetchBrain requests
 
       function fetchBrain() {
+        // Cancel any previous in-flight request before starting a new one
+        if ( _fetchController ) _fetchController.abort();
+        _fetchController=new AbortController();
         const url='/api/brain' + ( currentThreshold > 0 ? '?min_importance=' + ( currentThreshold / 100 ).toFixed(2) : '' );
-        fetch( url ).then( r => r.json() ).then( data => {
+        fetch( url, { signal: _fetchController.signal } ).then( r => r.json() ).then( data => {
           if ( !data.nodes?.length ) {
             if ( !initialLoadDone ) {
               document.querySelector( '.loading-text' ).textContent='NO MEMORIES FOUND';
@@ -2397,7 +2526,8 @@
               }
             }
           }
-        } ).catch( () => {
+        } ).catch( err => {
+          if ( err.name==='AbortError' ) return; // superseded by a newer request — ignore
           if ( !initialLoadDone ) {
             document.querySelector( '.loading-text' ).textContent='CORTEX OFFLINE';
           }
@@ -2577,9 +2707,12 @@
       createNodeSystems();
       createSignalSystem();
       createSpawnBurstSystem();
-      // Always fetch directly — same local origin in both modes
-      fetchBrain();
-      setInterval( fetchBrain, 15000 );
+        // In embedded mode the parent sends all data via LOAD_BRAIN_DATA — no direct fetch needed.
+        // In standalone mode, fetch once and poll for new nodes every 15 s.
+        if ( !embeddedMode ) {
+          fetchBrain();
+          setInterval( fetchBrain, 15000 );
+      }
       if ( !embeddedMode ) {
         fetchConsciousness();
         setInterval( fetchConsciousness, 30000 );
@@ -2587,6 +2720,14 @@
         // Signal parent we're ready (for highlight/focus postMessages)
         try { window.parent.postMessage( { type: 'BRAIN_READY' }, '*' ); } catch { }
       }
+
+      // Expose brain state for parent-frame debugging / integration tests
+      window.__clude = {
+        get memoryNodes() { return memoryNodes; },
+        get knownIds() { return knownIds; },
+        get totalMemoryCount() { return totalMemoryCount; },
+      };
+
       renderLoop();
 
     </script>

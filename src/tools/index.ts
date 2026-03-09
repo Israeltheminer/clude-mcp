@@ -161,9 +161,9 @@ export function registerToolHandlers(server: Server, brain: Cortex): void {
         case "score_importance":
           return await handleScoreImportance(brain, args as Record<string, unknown>);
 
-        // --- Utilities (local, synchronous) --------------------------------
+        // --- Utilities --------------------------------------------------
         case "infer_concepts":
-          return handleInferConcepts(brain, args as Record<string, unknown>);
+          return await handleInferConcepts(brain, args as Record<string, unknown>);
 
         case "format_context":
           return handleFormatContext(brain, args as Record<string, unknown>);
