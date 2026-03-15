@@ -3,55 +3,35 @@
  *
  * The main server bootstrap and lifecycle manager.
  *
- * ## Responsibility Boundary
- *
- * This module is the only place that knows about all three registration
- * layers (tools, resources, prompts). Its single exported function `main()`
- * performs the entire startup sequence:
- *
- *   1. Build config from environment variables
- *   2. Initialise the memory brain (Cortex / CortexV2)
- *   3. Construct the MCP Server instance
- *   4. Register tool, resource, and prompt handlers
- *   5. Wire up OS signal handlers for graceful shutdown
- *   6. Connect to the stdio transport and start serving
- *
- * Everything else lives in focused modules:
- *
- *   config.ts              — env → CortexConfig
- *   brain.ts               — CortexConfig → initialised Cortex instance
- *   tools/index.ts         — register 13 tool handlers
- *   resources/handlers.ts  — register 3 resource handlers
- *   prompts/index.ts       — register 3 prompt handlers
- *
  * ## Transport
  *
- * clude uses MCP's stdio transport:
- *   stdout → exclusive JSON-RPC channel (the MCP protocol stream)
- *   stderr → diagnostic logs (safe to write freely; ignored by clients)
+ * clude uses MCP's Streamable HTTP transport, served on the same HTTP server
+ * as the memory explorer UI. This means:
  *
- * The `LOG_LEVEL=silent` guard in `index.ts` ensures pino/sonic-boom never
- * writes to stdout. This module does not touch that guard — it must be set
- * before any imports load the SDK.
+ *   - The server runs as a standalone process (not a subprocess of Claude Code)
+ *   - It persists across Claude Code sessions
+ *   - The explorer UI is always available at http://localhost:<port>
+ *   - MCP clients connect via http://localhost:<port>/mcp
+ *
+ * ## Endpoints
+ *
+ *   POST /mcp        → MCP JSON-RPC (Streamable HTTP transport)
+ *   GET  /mcp        → MCP SSE stream (server→client notifications)
+ *   DELETE /mcp      → MCP session termination
+ *   GET  /           → Explorer UI
+ *   GET  /api/*      → Explorer API routes
  *
  * ## Shutdown
  *
- * SIGINT and SIGTERM both call `brain.destroy()` and exit with code 0.
- * `destroy()` is synchronous — it stops the dream scheduler and cleans up
- * the event bus, but does not close the Supabase connection pool (that is
- * left to the process exit).
- *
- * ## Error on Init
- *
- * If config building fails (missing env vars) or brain.init() fails
- * (unreachable Supabase, invalid API key), the error is logged to stderr
- * and the process exits with code 1. This is the correct behaviour for an
- * MCP server — the client will see a clean connection failure rather than
- * a zombie process that drops all calls silently.
+ * SIGINT and SIGTERM close all MCP transports, stop the scheduler,
+ * destroy the brain, and exit cleanly.
  */
 
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import { log } from "./log.js";
 import { buildConfig } from "./config.js";
@@ -59,28 +39,58 @@ import { createBrain } from "./brain.js";
 import { registerToolHandlers } from "./tools/index.js";
 import { registerResourceHandlers } from "./resources/handlers.js";
 import { registerPromptHandlers } from "./prompts/index.js";
-import { startExplorer } from "./http.js";
+import { startScheduler, stopScheduler } from "./scheduler.js";
+import { createInteractionTracker } from "./interaction-tracker.js";
+import { handleExplorerRequest } from "./http.js";
+
+// ---------------------------------------------------------------------------
+// MCP server factory — creates a fresh Server + handlers per session
+// ---------------------------------------------------------------------------
+
+function createMcpServer(brain: any, tracker: any): Server {
+  const server = new Server(
+    { name: "clude", version: "1.0.0" },
+    {
+      capabilities: {
+        tools: {},
+        resources: {},
+        prompts: {},
+      },
+    }
+  );
+
+  registerToolHandlers(server, brain, tracker);
+  registerResourceHandlers(server, brain);
+  registerPromptHandlers(server, brain);
+
+  return server;
+}
+
+// ---------------------------------------------------------------------------
+// JSON body parser for raw http.IncomingMessage
+// ---------------------------------------------------------------------------
+
+async function parseJsonBody(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString()));
+      } catch {
+        resolve(undefined);
+      }
+    });
+    req.on("error", reject);
+  });
+}
 
 /**
- * Bootstrap and run the clude MCP server.
- *
- * This function never resolves during normal operation — the server stays
- * alive until a SIGINT/SIGTERM signal triggers `brain.destroy()` + exit.
- *
- * @throws If config is invalid or brain initialisation fails. The caller
- *         (`src/index.ts`) catches this and exits with code 1.
+ * Bootstrap and run the clude MCP server over Streamable HTTP.
  */
 export async function main(): Promise<void> {
-  // -------------------------------------------------------------------------
-  // 1. Config — build from environment variables.
-  //    Throws immediately if required vars are missing.
-  // -------------------------------------------------------------------------
   const config = buildConfig();
 
-  // -------------------------------------------------------------------------
-  // 2. Brain — initialise Cortex (or CortexV2 if available).
-  //    Establishes DB connections, verifies schema, warms embeddings.
-  // -------------------------------------------------------------------------
   let brain;
   try {
     brain = await createBrain(config);
@@ -90,57 +100,150 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // -------------------------------------------------------------------------
-  // 3. Server — construct the MCP Server with full capability declaration.
-  //    All three capability namespaces must be declared here for clients to
-  //    know they can call ListTools / ListResources / ListPrompts.
-  // -------------------------------------------------------------------------
-  const server = new Server(
-    { name: "clude", version: "1.0.0" },
-    {
-      capabilities: {
-        tools: {},      // Enables: ListTools, CallTool
-        resources: {},  // Enables: ListResources, ReadResource
-        prompts: {},    // Enables: ListPrompts, GetPrompt
-      },
+  const tracker = createInteractionTracker(brain);
+
+  // ── Session management ──────────────────────────────────────────────────
+  const transports: Record<string, StreamableHTTPServerTransport> = {};
+
+  // ── HTTP server ─────────────────────────────────────────────────────────
+  const port = Number(process.env.EXPLORER_PORT ?? 3141);
+
+  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+    const path = url.pathname;
+
+    // ── MCP Streamable HTTP endpoint ────────────────────────────────────
+    if (path === "/mcp") {
+      // CORS preflight
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, mcp-session-id, Last-Event-ID",
+        });
+        res.end();
+        return;
+      }
+
+      try {
+        if (req.method === "POST") {
+          const body = await parseJsonBody(req);
+          const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+          if (sessionId && transports[sessionId]) {
+            // Existing session
+            await transports[sessionId].handleRequest(req, res, body);
+          } else if (!sessionId && isInitializeRequest(body)) {
+            // New session
+            const transport = new StreamableHTTPServerTransport({
+              sessionIdGenerator: () => randomUUID(),
+              onsessioninitialized: (sid: string) => {
+                transports[sid] = transport;
+                log(`MCP session initialized: ${sid}`);
+              },
+            });
+
+            transport.onclose = () => {
+              const sid = transport.sessionId;
+              if (sid && transports[sid]) {
+                delete transports[sid];
+                log(`MCP session closed: ${sid}`);
+              }
+            };
+
+            const mcpServer = createMcpServer(brain, tracker);
+            await mcpServer.connect(transport);
+            await transport.handleRequest(req, res, body);
+          } else {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              jsonrpc: "2.0",
+              error: { code: -32000, message: "Bad Request: No valid session ID provided" },
+              id: null,
+            }));
+          }
+        } else if (req.method === "GET") {
+          // SSE stream for server→client notifications
+          const sessionId = req.headers["mcp-session-id"] as string | undefined;
+          if (!sessionId || !transports[sessionId]) {
+            res.writeHead(400, { "Content-Type": "text/plain" });
+            res.end("Invalid or missing session ID");
+            return;
+          }
+          await transports[sessionId].handleRequest(req, res);
+        } else if (req.method === "DELETE") {
+          // Session termination
+          const sessionId = req.headers["mcp-session-id"] as string | undefined;
+          if (!sessionId || !transports[sessionId]) {
+            res.writeHead(400, { "Content-Type": "text/plain" });
+            res.end("Invalid or missing session ID");
+            return;
+          }
+          await transports[sessionId].handleRequest(req, res);
+        } else {
+          res.writeHead(405, { "Content-Type": "text/plain" });
+          res.end("Method not allowed");
+        }
+      } catch (err: any) {
+        log("MCP request error:", String(err));
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32603, message: "Internal server error" },
+            id: null,
+          }));
+        }
+      }
+      return;
     }
-  );
 
-  // -------------------------------------------------------------------------
-  // 4. Handlers — register tools, resources, and prompts.
-  //    Order does not matter; all handlers are registered before connecting.
-  // -------------------------------------------------------------------------
-  registerToolHandlers(server, brain);
-  registerResourceHandlers(server, brain);
-  registerPromptHandlers(server, brain);
+    // ── Explorer UI + API ───────────────────────────────────────────────
+    try {
+      await handleExplorerRequest(brain, req, res);
+    } catch (err: any) {
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message ?? "Internal error" }));
+      }
+    }
+  });
 
-  // -------------------------------------------------------------------------
-  // 5. Explorer — start local HTTP server if EXPLORER_PORT is set.
-  //    Shares the brain instance with MCP tools. Binds to 127.0.0.1 only.
-  // -------------------------------------------------------------------------
-  const explorerPort = process.env.EXPLORER_PORT
-    ? Number(process.env.EXPLORER_PORT)
-    : null;
-  const explorerServer = explorerPort ? startExplorer(brain, explorerPort) : null;
+  httpServer.on("error", (err: any) => {
+    if (err.code === "EADDRINUSE") {
+      log(`Port ${port} already in use — is another clude instance running?`);
+      process.exit(1);
+    } else {
+      log("HTTP server error:", err.message);
+    }
+  });
 
-  // -------------------------------------------------------------------------
-  // 6. Shutdown — wire SIGINT/SIGTERM for graceful cleanup.
-  //    Calling brain.destroy() stops the dream scheduler + event bus.
-  //    The process exits immediately after — no async teardown needed.
-  // -------------------------------------------------------------------------
-  const shutdown = (): void => {
-    explorerServer?.close();
+  // ── Scheduler ───────────────────────────────────────────────────────────
+  const scheduler = startScheduler(brain);
+
+  // ── Shutdown ────────────────────────────────────────────────────────────
+  const shutdown = async (): Promise<void> => {
+    log("Shutting down...");
+    await tracker.flush();
+    stopScheduler(scheduler);
+
+    for (const sid of Object.keys(transports)) {
+      try {
+        await transports[sid].close();
+        delete transports[sid];
+      } catch {}
+    }
+
+    httpServer.close();
     brain.destroy();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  // -------------------------------------------------------------------------
-  // 7. Connect — attach the stdio transport and start the JSON-RPC loop.
-  //    After this point the server is live and will handle incoming requests.
-  // -------------------------------------------------------------------------
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  log("clude ready.");
+  // ── Start ───────────────────────────────────────────────────────────────
+  httpServer.listen(port, "127.0.0.1", () => {
+    log(`clude ready → http://localhost:${port}`);
+    log(`MCP endpoint → http://localhost:${port}/mcp`);
+  });
 }
