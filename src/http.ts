@@ -317,6 +317,23 @@ async function handleRequest(
  */
 import type { Server } from "node:http";
 
+/**
+ * Handle a single explorer request (UI + API routes).
+ *
+ * Called by server.ts for all non-MCP requests. Exported so the HTTP
+ * server can be shared with the MCP Streamable HTTP transport.
+ */
+export async function handleExplorerRequest(
+  brain: Cortex,
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
+  await handleRequest(brain, req, res);
+}
+
+/**
+ * Start a standalone explorer HTTP server (legacy — used by scripts/explorer.ts).
+ */
 export function startExplorer(brain: Cortex, port: number): Server {
   const server = createServer(async (req, res) => {
     try {

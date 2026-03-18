@@ -92,6 +92,8 @@ import {
   handleFormatContext,
 } from "./handlers/utilities.js";
 
+import type { InteractionTracker } from "../interaction-tracker.js";
+
 /**
  * Register all tool-related request handlers on the MCP server.
  *
@@ -102,7 +104,7 @@ import {
  * @param server - The MCP Server instance to register handlers on.
  * @param brain  - The fully initialised Cortex (or CortexV2) instance.
  */
-export function registerToolHandlers(server: Server, brain: Cortex): void {
+export function registerToolHandlers(server: Server, brain: Cortex, tracker?: InteractionTracker): void {
   // -----------------------------------------------------------------------
   // Tool discovery — MCP clients call this to learn what tools exist.
   // Returns the static TOOLS array defined in src/tools/definitions/index.ts.
@@ -114,59 +116,77 @@ export function registerToolHandlers(server: Server, brain: Cortex): void {
   // -----------------------------------------------------------------------
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args = {} } = req.params;
+    const start = Date.now();
 
     try {
+      let result;
+
       switch (name) {
         // --- Storage -------------------------------------------------------
         case "store_memory":
-          return await handleStoreMemory(brain, args as Record<string, unknown>);
+          result = await handleStoreMemory(brain, args as Record<string, unknown>);
+          break;
 
         case "export_pack":
-          return await handleExportPack(brain, args as Record<string, unknown>);
+          result = await handleExportPack(brain, args as Record<string, unknown>);
+          break;
 
         case "import_pack":
-          return await handleImportPack(brain, args as Record<string, unknown>);
+          result = await handleImportPack(brain, args as Record<string, unknown>);
+          break;
 
         // --- Retrieval -----------------------------------------------------
         case "recall_memories":
-          return await handleRecallMemories(brain, args as Record<string, unknown>);
+          result = await handleRecallMemories(brain, args as Record<string, unknown>);
+          break;
 
         case "recall_summaries":
-          return await handleRecallSummaries(brain, args as Record<string, unknown>);
+          result = await handleRecallSummaries(brain, args as Record<string, unknown>);
+          break;
 
         case "hydrate_memories":
-          return await handleHydrateMemories(brain, args as Record<string, unknown>);
+          result = await handleHydrateMemories(brain, args as Record<string, unknown>);
+          break;
 
         // --- Graph ---------------------------------------------------------
         case "link_memories":
-          return await handleLinkMemories(brain, args as Record<string, unknown>);
+          result = await handleLinkMemories(brain, args as Record<string, unknown>);
+          break;
 
         // --- Analysis (read-only, no side-effects) -------------------------
         case "get_stats":
-          return await handleGetStats(brain);
+          result = await handleGetStats(brain);
+          break;
 
         case "get_recent":
-          return await handleGetRecent(brain, args as Record<string, unknown>);
+          result = await handleGetRecent(brain, args as Record<string, unknown>);
+          break;
 
         case "get_self_model":
-          return await handleGetSelfModel(brain);
+          result = await handleGetSelfModel(brain);
+          break;
 
         // --- Cognition (LLM-backed / mutation) -----------------------------
         case "decay_memories":
-          return await handleDecayMemories(brain);
+          result = await handleDecayMemories(brain);
+          break;
 
         case "dream":
-          return await handleDream(brain, args as Record<string, unknown>);
+          result = await handleDream(brain, args as Record<string, unknown>);
+          break;
 
         case "score_importance":
-          return await handleScoreImportance(brain, args as Record<string, unknown>);
+          result = await handleScoreImportance(brain, args as Record<string, unknown>);
+          break;
 
         // --- Utilities --------------------------------------------------
         case "infer_concepts":
-          return await handleInferConcepts(brain, args as Record<string, unknown>);
+          result = await handleInferConcepts(brain, args as Record<string, unknown>);
+          break;
 
         case "format_context":
-          return handleFormatContext(brain, args as Record<string, unknown>);
+          result = handleFormatContext(brain, args as Record<string, unknown>);
+          break;
 
         // --- Unknown -------------------------------------------------------
         default:
@@ -175,6 +195,19 @@ export function registerToolHandlers(server: Server, brain: Cortex): void {
             `Unknown tool: ${name}`
           );
       }
+
+      // Record the call for automatic episodic memory creation
+      if (tracker) {
+        tracker.record({
+          timestamp: new Date().toISOString(),
+          toolName: name,
+          argsSnippet: JSON.stringify(args).slice(0, 200),
+          resultSnippet: JSON.stringify(result).slice(0, 200),
+          durationMs: Date.now() - start,
+        });
+      }
+
+      return result;
     } catch (err) {
       // Pass MCP errors through unchanged — they carry an intentional code.
       if (err instanceof McpError) throw err;
