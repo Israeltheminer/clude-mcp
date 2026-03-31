@@ -59,6 +59,8 @@ export interface InteractionTracker {
   record(entry: InteractionEntry): void;
   /** Force flush (e.g. on shutdown). Resolves silently if nothing to flush. */
   flush(): Promise<void>;
+  /** Stop the time-based flush timer. */
+  destroy(): void;
   /** Pending calls since last flush. */
   readonly pendingCount: number;
 }
@@ -98,6 +100,7 @@ export function createInteractionTracker(
     return {
       record() {},
       async flush() {},
+      destroy() {},
       get pendingCount() {
         return 0;
       },
@@ -116,6 +119,23 @@ export function createInteractionTracker(
   const buffer: InteractionEntry[] = [];
   let substantiveCount = 0;
   let flushInProgress = false;
+
+  // Time-based flush: if there are pending entries and no flush has happened
+  // in FLUSH_INTERVAL_MS, flush anyway. This prevents losing the buffer when
+  // sessions are short or low-activity.
+  const FLUSH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  let flushTimer: ReturnType<typeof setInterval> | null = null;
+
+  flushTimer = setInterval(() => {
+    if (buffer.length > 0 && !flushInProgress) {
+      log("auto-episodic: time-based flush triggered");
+      void doFlush();
+    }
+  }, FLUSH_INTERVAL_MS);
+  // Don't let the timer keep the process alive
+  if (flushTimer && typeof flushTimer === "object" && "unref" in flushTimer) {
+    flushTimer.unref();
+  }
 
   // -----------------------------------------------------------------------
   // LLM-based summarisation
@@ -273,7 +293,18 @@ export function createInteractionTracker(
     },
 
     async flush(): Promise<void> {
+      if (flushTimer) {
+        clearInterval(flushTimer);
+        flushTimer = null;
+      }
       await doFlush();
+    },
+
+    destroy(): void {
+      if (flushTimer) {
+        clearInterval(flushTimer);
+        flushTimer = null;
+      }
     },
 
     get pendingCount(): number {

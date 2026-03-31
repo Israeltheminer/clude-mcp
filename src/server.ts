@@ -31,6 +31,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomUUID } from "node:crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import { log } from "./log.js";
@@ -101,6 +102,11 @@ export async function main(): Promise<void> {
   }
 
   const tracker = createInteractionTracker(brain);
+
+  // ── Stdio transport (for Claude Desktop / Antigravity) ───────────────────
+  const stdioTransport = new StdioServerTransport();
+  const stdioServer = createMcpServer(brain, tracker);
+  await stdioServer.connect(stdioTransport);
 
   // ── Session management ──────────────────────────────────────────────────
   const transports: Record<string, StreamableHTTPServerTransport> = {};
@@ -225,7 +231,12 @@ export async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     log("Shutting down...");
     await tracker.flush();
+    tracker.destroy();
     stopScheduler(scheduler);
+
+    try {
+      await stdioTransport.close();
+    } catch {}
 
     for (const sid of Object.keys(transports)) {
       try {
