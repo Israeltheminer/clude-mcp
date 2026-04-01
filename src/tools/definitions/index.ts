@@ -72,6 +72,7 @@ import {
 } from "./cognition.js";
 
 import { inferConceptsDef, formatContextDef } from "./utilities.js";
+import { ingestSessionsDef } from "./ingestion.js";
 
 /**
  * All 13 MCP tool definitions, in canonical display order.
@@ -108,6 +109,9 @@ export const TOOLS: Tool[] = [
   decayMemoriesDef,
   dreamDef,
   scoreImportanceDef,
+
+  // Ingestion
+  ingestSessionsDef,
 
   // Utilities (local, zero latency)
   inferConceptsDef,

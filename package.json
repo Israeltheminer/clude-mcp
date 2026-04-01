@@ -23,11 +23,13 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "adm-zip": "^0.5.16",
     "clude-bot": "^2.7.8",
     "dotenv": "^16.6.1",
     "node-cron": "^3.0.3"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.0.0",
     "@types/node-cron": "^3.0.11",
     "patch-package": "^8.0.1",

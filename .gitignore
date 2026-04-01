@@ -5,3 +5,4 @@ dist/
 logs/
 .scheduler-state.json
 .claude/worktrees/
+supabase/.temp/

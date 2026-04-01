@@ -92,6 +92,8 @@ import {
   handleFormatContext,
 } from "./handlers/utilities.js";
 
+import { handleIngestSessions } from "./handlers/ingestion.js";
+
 import type { InteractionTracker } from "../interaction-tracker.js";
 
 /**
@@ -177,6 +179,11 @@ export function registerToolHandlers(server: Server, brain: Cortex, tracker?: In
 
         case "score_importance":
           result = await handleScoreImportance(brain, args as Record<string, unknown>);
+          break;
+
+        // --- Ingestion ----------------------------------------------------
+        case "ingest_sessions":
+          result = await handleIngestSessions(brain, args as Record<string, unknown>);
           break;
 
         // --- Utilities --------------------------------------------------
