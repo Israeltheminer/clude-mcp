@@ -5,7 +5,23 @@ export interface Turn {
 }
 
 export interface IngestState {
-  ingested: Record<string, string>; // filePath → ISO timestamp of ingest
+  /**
+   * Session-level ingest tracking, keyed by stable sourceId.
+   *
+   * - key:   session.sourceId (e.g. "claude-code:/.../file.jsonl")
+   * - value: metadata about the last ingest for that logical session
+   */
+  ingested: Record<
+    string,
+    {
+      /** Last fully processed window index for this session. */
+      lastWindow: number;
+      /** Last physical path used for this session (for debugging/inspection). */
+      lastPath: string;
+      /** ISO timestamp of the last successful ingest for this session. */
+      updatedAt: string;
+    }
+  >;
 }
 
 export interface IngestOptions {
@@ -16,7 +32,17 @@ export interface IngestOptions {
   dryRun: boolean;
   chainDream: boolean;
   sourcePath?: string;
-  platform: "claude-code" | "chatgpt" | "auto";
+  platform: "claude-code" | "claude-web" | "chatgpt" | "cursor" | "auto";
+  /**
+   * Whether to store episodic memories for each qualifying window.
+   * Defaults to true.
+   */
+  episodic?: boolean;
+  /**
+   * Whether to store semantic memories (LLM scoring/summarisation).
+   * Defaults to false — enable explicitly when you want to rebuild semantic layer.
+   */
+  semantic?: boolean;
 }
 
 export interface IngestResult {
@@ -29,8 +55,23 @@ export interface IngestResult {
 
 export interface SessionFile {
   path: string;
-  platform: "claude-code" | "chatgpt" | "generic";
+  platform: "claude-code" | "claude-web" | "chatgpt" | "cursor" | "generic";
   turns: Turn[];
+  /**
+   * Optional project identifier for sessions that are naturally scoped
+   * to a codebase (e.g. Claude Code projects under ~/.claude/projects/<folder>).
+   * For Claude Code, this is the project folder name.
+   */
+  projectFolder?: string;
+  /**
+   * Stable identifier for this logical conversation/session.
+   * Used to relate memories back to their source and avoid duplicates.
+   * Examples:
+   * - claude-code:/Users/.../.claude/projects/clude-mcp/123.jsonl
+   * - claude-web:<conversation-uuid>
+   * - chatgpt:<file>#<title>
+   */
+  sourceId: string;
 }
 
 export type ProgressEvent =
@@ -45,4 +86,6 @@ export const DEFAULT_OPTIONS: Omit<IngestOptions, "dryRun" | "chainDream"> = {
   threshold: 0.4,
   limit: 0,
   platform: "auto",
+  episodic: true,
+  semantic: true,
 };

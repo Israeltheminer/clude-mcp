@@ -4,10 +4,10 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 export const ingestSessionsDef: Tool = {
   name: "ingest_sessions",
   description:
-    "Ingest AI chat sessions from Claude Code, ChatGPT exports, or a generic " +
-    "drop folder into the memory system. Scans all known locations by default " +
-    "(~/.claude/projects/ for Claude Code, ~/.claude/imports/chatgpt/ for " +
-    "ChatGPT exports), or accepts a specific file/directory path. " +
+    "Ingest AI chat sessions from Claude Code, Claude.ai web, or ChatGPT " +
+    "exports into the memory system. Scans all known locations by default " +
+    "(~/.claude/projects/ for Claude Code, ~/.claude/imports/claude-web/ for " +
+    "Claude.ai exports, ~/.claude/imports/chatgpt/ for ChatGPT exports). " +
     "Optionally chains into the dream consolidation cycle after ingestion. " +
     "Self-hosted only. Requires ANTHROPIC_API_KEY for LLM scoring/summarisation.",
   inputSchema: {
@@ -17,12 +17,12 @@ export const ingestSessionsDef: Tool = {
         type: "string",
         description:
           "Path to a specific file or directory to ingest. " +
-          "Supports .jsonl (Claude Code), .json/.zip (ChatGPT export). " +
+          "Supports .jsonl (Claude Code), .json/.zip (Claude.ai / ChatGPT export). " +
           "When omitted, scans all known locations.",
       },
       platform: {
         type: "string",
-        enum: ["claude-code", "chatgpt", "auto"],
+        enum: ["claude-code", "claude-web", "chatgpt", "auto"],
         description:
           "Force platform detection. Default 'auto' infers from file extension.",
       },

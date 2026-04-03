@@ -12,6 +12,8 @@
  *   --threshold N      Min importance score to store (default: 0.4)
  *   --source <path>    Ingest a specific file or directory
  *   --platform <p>     Force platform: claude-code, chatgpt, auto (default: auto)
+ *   --episodic         Store episodic memories (enabled by default; use --no-episodic to disable)
+ *   --semantic         Store semantic memories (LLM scoring/summarisation; enabled by default; use --no-semantic to disable)
  *   --chain-dream      Run dream consolidation after ingestion
  *   --dry-run          Preview what would be processed without storing
  *   --reprocess        Clear ingestion state and reprocess all sessions
@@ -93,6 +95,8 @@ const options: IngestOptions = {
   platform:   (argVal("--platform") as IngestOptions["platform"]) ?? "auto",
   chainDream: process.argv.includes("--chain-dream"),
   dryRun:     process.argv.includes("--dry-run"),
+  episodic:   process.argv.includes("--no-episodic") ? false : true,
+  semantic:   process.argv.includes("--no-semantic") ? false : true,
 };
 
 // ── Reprocess mode ───────────────────────────────────────────────────────────
@@ -127,7 +131,7 @@ async function main() {
   console.log(
     `window=${options.window}  threshold=${options.threshold}  ` +
     `limit=${options.limit || "none"}  project=${options.project ?? "all"}  ` +
-    `platform=${options.platform}`
+    `platform=${options.platform}  episodic=${options.episodic !== false ? "on" : "off"}  semantic=${options.semantic ? "on" : "off"}`
   );
   console.log();
 

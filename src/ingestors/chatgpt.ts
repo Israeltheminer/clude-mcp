@@ -85,10 +85,12 @@ function parseConversationsJson(data: ChatGPTConversation[], sourcePath: string)
     const turns = walkTree(conv.mapping);
     if (turns.length < 2) continue;
 
+    const key = conv.title ?? "untitled";
     sessions.push({
       path: `${sourcePath}#${conv.title ?? "untitled"}`,
       platform: "chatgpt",
       turns,
+      sourceId: `chatgpt:${sourcePath}#${key}`,
     });
   }
 

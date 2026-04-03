@@ -7,7 +7,9 @@ import { collectAllSessions } from "./generic.js";
 import { sourceLabel } from "./claude-code.js";
 import { log } from "../log.js";
 
-const voyageLimiter = new RateLimiter(3, 60_000);
+// Voyage free tier: 3 RPM. Paid tier 1: 2000 RPM. Auto-detect via env.
+const VOYAGE_RPM = parseInt(process.env.VOYAGE_RPM ?? "300", 10);
+const voyageLimiter = new RateLimiter(VOYAGE_RPM, 60_000);
 
 /**
  * Build user-focused content from a window of turns.
@@ -76,7 +78,7 @@ export async function runIngestionPipeline(
   });
 
   const state = loadState();
-  let pending = allSessions.filter(s => !state.ingested[s.path]);
+  let pending = allSessions.filter(s => !state.ingested[s.sourceId]);
 
   result.sessionsPending = pending.length;
   result.sessionsSkipped = allSessions.length - pending.length;
@@ -96,15 +98,21 @@ export async function runIngestionPipeline(
     const turns = session.turns;
 
     if (turns.length < 2) {
-      state.ingested[session.path] = new Date().toISOString();
+      state.ingested[session.sourceId] = {
+        lastWindow: 0,
+        lastPath: session.path,
+        updatedAt: new Date().toISOString(),
+      };
       saveState(state);
       onProgress?.({ kind: "skip", index: si, total, reason: "too short" });
       continue;
     }
 
-    const source = session.platform === "claude-code"
+    const sourceBase = session.platform === "claude-code"
       ? sourceLabel(session.path)
       : session.platform;
+    const projectFragment = session.projectFolder ? `:${session.projectFolder}` : "";
+    const source = `${sourceBase}${projectFragment}`;
     const sessionDate = turns[0]?.timestamp?.slice(0, 10) ?? "unknown";
     const sessionLabel = `${source}  ${sessionDate}`;
 
@@ -144,53 +152,101 @@ export async function runIngestionPipeline(
         continue;
       }
 
-      // ── Score on user text, not assistant narration ───────────────
-      const importance = await scoreImportance(userText.slice(0, 600));
+      // ── Optionally store episodic memory (raw conversation window) ─────────
+      const wantEpisodic = options.episodic !== false;
+      if (wantEpisodic) {
+        const episodicContent = windowTurns
+          .map(t => `${t.role === "user" ? "User" : "Assistant"}: ${t.text}`)
+          .join("\n\n")
+          .slice(0, 4000);
 
-      // Heuristic scores max out ~0.55; lower the threshold proportionally
-      const effectiveThreshold = importance <= 0.55
-        ? Math.max(0.25, options.threshold * 0.65)
-        : options.threshold;
+        const episodicSummary = `[${sessionLabel}] ${userText.slice(0, 160)}`;
 
-      if (importance < effectiveThreshold) {
-        onProgress?.({
-          kind: "window",
-          index: si,
-          total,
-          windowNum: winNum,
-          windowTotal,
-          status: `skipped (score ${importance.toFixed(2)})`,
-        });
+        try {
+          const episodicId = await brain.store({
+            type: "episodic",
+            content: episodicContent,
+            summary: episodicSummary,
+            source,
+            tags: session.projectFolder ? [`project:${session.projectFolder}`] : [],
+            importance: 0.3,
+            metadata: {
+              source_id: session.sourceId,
+              window_index: Math.floor(wi / windowSize) + 1,
+              platform: session.platform,
+              project_folder: session.projectFolder ?? null,
+              session_path: session.path,
+            },
+          });
+
+          if (episodicId && prevCheckpointId) {
+            try {
+              await brain.link(prevCheckpointId, episodicId, "follows", 0.6);
+            } catch {
+              // non-fatal
+            }
+          }
+          prevCheckpointId = episodicId ?? prevCheckpointId;
+          sessionMemories++;
+        } catch (err: any) {
+          log(`ingest: window ${winNum} episodic store failed: ${err.message}`);
+        }
+      }
+
+      // If semantic is disabled, skip the LLM path entirely.
+      if (!options.semantic) {
         continue;
       }
 
-      // ── LLM summarization focused on user context ─────────────────
-      onProgress?.({
-        kind: "window",
-        index: si,
-        total,
-        windowNum: winNum,
-        windowTotal,
-        status: "summarizing",
-      });
+      // ── LLM scoring, summarization, tagging — all require LLM ─────
+      // If any LLM call fails, skip the window entirely. No fallbacks.
+      let importance: number;
+      let summary: string;
+      let tags: string[];
 
-      const summary = await summarizeForUserContext(userText, assistantContext);
+      try {
+        importance = await scoreImportance(userText.slice(0, 600));
+      } catch (err: any) {
+        log(`ingest: window ${winNum} score failed: ${err.message?.slice(0, 80)}`);
+        onProgress?.({ kind: "window", index: si, total, windowNum: winNum, windowTotal, status: "skipped (LLM error)" });
+        continue;
+      }
+
+      if (importance < options.threshold) {
+        onProgress?.({ kind: "window", index: si, total, windowNum: winNum, windowTotal, status: `skipped (score ${importance.toFixed(2)})` });
+        continue;
+      }
+
+      onProgress?.({ kind: "window", index: si, total, windowNum: winNum, windowTotal, status: "summarizing" });
+
+      try {
+        summary = await summarizeForUserContext(userText, assistantContext);
+      } catch (err: any) {
+        log(`ingest: window ${winNum} summarize failed: ${err.message?.slice(0, 80)}`);
+        onProgress?.({ kind: "window", index: si, total, windowNum: winNum, windowTotal, status: "skipped (LLM error)" });
+        continue;
+      }
 
       if (!summary) {
-        onProgress?.({
-          kind: "window",
-          index: si,
-          total,
-          windowNum: winNum,
-          windowTotal,
-          status: "skipped (no user-relevant content)",
-        });
+        onProgress?.({ kind: "window", index: si, total, windowNum: winNum, windowTotal, status: "skipped (no user-relevant content)" });
         continue;
       }
 
-      // Tags from LLM — do NOT use brain.inferConcepts (returns []).
-      // Feed user text + summary only; exclude assistant context to avoid tag pollution.
-      const tags = await inferTags(userText.slice(0, 1000) + "\n" + summary);
+      try {
+        tags = await inferTags(userText.slice(0, 1000) + "\n" + summary);
+      } catch (err: any) {
+        log(`ingest: window ${winNum} tags failed: ${err.message?.slice(0, 80)}`);
+        onProgress?.({ kind: "window", index: si, total, windowNum: winNum, windowTotal, status: "skipped (LLM error)" });
+        continue;
+      }
+
+      // Attach a stable project tag for code-scoped sessions (e.g. Claude Code projects)
+      if (session.projectFolder) {
+        const projectTag = `project:${session.projectFolder}`;
+        if (!tags.includes(projectTag)) {
+          tags = [...tags, projectTag];
+        }
+      }
 
       // ── Content: user text as primary, condensed assistant as supporting ──
       const content = [
@@ -216,9 +272,16 @@ export async function runIngestionPipeline(
           type: "semantic",
           content,
           summary: `[${sessionLabel}] ${summary}`,
-          source: "checkpoint",
+          source,
           tags,
           importance,
+          metadata: {
+            source_id: session.sourceId,
+            window_index: winNum,
+            platform: session.platform,
+            project_folder: session.projectFolder ?? null,
+            session_path: session.path,
+          },
         });
         sessionMemories++;
 
@@ -233,7 +296,11 @@ export async function runIngestionPipeline(
       }
     }
 
-    state.ingested[session.path] = new Date().toISOString();
+    state.ingested[session.sourceId] = {
+      lastWindow: Math.ceil(turns.length / options.window),
+      lastPath: session.path,
+      updatedAt: new Date().toISOString(),
+    };
     saveState(state);
     result.sessionsProcessed++;
     result.memoriesStored += sessionMemories;

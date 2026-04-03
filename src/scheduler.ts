@@ -50,6 +50,7 @@ import type { Cortex } from "clude-bot";
 import { log } from "./log.js";
 import { runIngestionPipeline } from "./ingestors/pipeline.js";
 import { runHealthCheck } from "./healthcheck/runner.js";
+import { runProceduralExtraction } from "./procedures/extract.js";
 
 export interface SchedulerHandle {
   ingestJob: cron.ScheduledTask;
@@ -141,6 +142,9 @@ async function runDream(brain: Cortex): Promise<void> {
   log("Scheduler: starting dream cycle...");
   try {
     await brain.dream({});
+    // After dream has consolidated / reflected on memories, run a small
+    // procedural extraction pass to distill any reusable workflows.
+    await runProceduralExtraction(brain);
     writeState({ lastDream: new Date().toISOString() });
     log("Scheduler: dream cycle complete.");
   } catch (err) {

@@ -99,6 +99,8 @@ export function collectSessionFiles(rootDir?: string): SessionFile[] {
           path: filePath,
           platform: "claude-code",
           turns,
+          projectFolder: projectDir,
+          sourceId: `claude-code:${filePath}`,
         });
       }
     }

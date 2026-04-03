@@ -23,11 +23,38 @@ import * as dotenv from "dotenv";
 dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
 // ---------------------------------------------------------------------------
-// Run the server. All application logic lives in server.ts.
+// Run: attach to an existing clude HTTP server when present (second IDE), else
+// full bootstrap — see instance-probe.ts / stdio-http-bridge.ts.
 // ---------------------------------------------------------------------------
+import {
+  attachToRunningEnabled,
+  explorerPort,
+  isCludeHttpRunning,
+  isMcpEndpointLikelyClude,
+} from "./instance-probe.js";
+import { runStdioHttpBridge } from "./stdio-http-bridge.js";
 import { main } from "./server.js";
+import { log } from "./log.js";
 
-main().catch((err: unknown) => {
-  process.stderr.write(`Fatal: ${err}\n`);
-  process.exit(1);
-});
+void (async () => {
+  try {
+    const port = explorerPort();
+    if (attachToRunningEnabled()) {
+      const hasHealth = await isCludeHttpRunning(port);
+      const hasMcp = hasHealth ? true : await isMcpEndpointLikelyClude(port);
+      if (hasHealth || hasMcp) {
+        if (!hasHealth && hasMcp) {
+          log(
+            `Attach probe: /_clude/health missing on :${port}, but /mcp is live. Attaching for backward compatibility.`
+          );
+        }
+        await runStdioHttpBridge(new URL(`http://127.0.0.1:${port}/mcp`));
+        return;
+      }
+    }
+    await main();
+  } catch (err: unknown) {
+    process.stderr.write(`Fatal: ${err}\n`);
+    process.exit(1);
+  }
+})();

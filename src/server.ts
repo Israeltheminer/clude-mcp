@@ -6,12 +6,15 @@
  * ## Transport
  *
  * clude uses MCP's Streamable HTTP transport, served on the same HTTP server
- * as the memory explorer UI. This means:
+ * as the memory explorer UI. Stdio MCP (Claude Desktop, Cursor, …) also
+ * starts this process: if another instance already owns `EXPLORER_PORT`, the
+ * subprocess attaches via a stdio→HTTP bridge to that instance instead of
+ * exiting on EADDRINUSE.
  *
- *   - The server runs as a standalone process (not a subprocess of Claude Code)
- *   - It persists across Claude Code sessions
- *   - The explorer UI is always available at http://localhost:<port>
- *   - MCP clients connect via http://localhost:<port>/mcp
+ *   - The primary process can persist across IDE sessions (whoever started first)
+ *   - The explorer UI is at http://localhost:<port>
+ *   - MCP over HTTP: http://localhost:<port>/mcp
+ *   - Health for attach probe: GET /_clude/health
  *
  * ## Endpoints
  *
@@ -117,6 +120,16 @@ export async function main(): Promise<void> {
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
     const path = url.pathname;
+
+    // ── Lightweight health (localhost attach probe; not secret, loopback-only) ─
+    if (path === "/_clude/health" && req.method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify({ ok: true, server: "clude-mcp" }));
+      return;
+    }
 
     // ── MCP Streamable HTTP endpoint ────────────────────────────────────
     if (path === "/mcp") {
