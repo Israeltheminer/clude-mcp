@@ -51,6 +51,8 @@ import { log } from "./log.js";
 import { runIngestionPipeline } from "./ingestors/pipeline.js";
 import { runHealthCheck } from "./healthcheck/runner.js";
 import { runProceduralExtraction } from "./procedures/extract.js";
+import { synthesizeSelfModel } from "./self-model/synthesize.js";
+import { cleanupDreamSelfModel } from "./self-model/cleanup.js";
 
 export interface SchedulerHandle {
   ingestJob: cron.ScheduledTask;
@@ -71,7 +73,7 @@ const DEFAULT_DREAM_CRON = "0 2,14 * * *";  // twice daily: 2am + 2pm
 const DEFAULT_DECAY_CRON = "0 3 * * *";
 const DEFAULT_HEALTH_CRON = "0 4 * * *";    // daily at 4am (after ingest+dream+decay)
 const CATCH_UP_INTERVAL_MS = 10 * 60 * 60 * 1000; // fire catch-up if >10h since last run
-const INGEST_CATCH_UP_MS = 22 * 60 * 60 * 1000;   // fire catch-up if >22h since last run (daily)
+const INGEST_CATCH_UP_MS = 12 * 60 * 60 * 1000;   // fire catch-up if >12h since last run
 
 // ---------------------------------------------------------------------------
 // State file helpers
@@ -123,6 +125,8 @@ async function runIngest(brain: Cortex): Promise<void> {
       dryRun: false,
       chainDream: false, // dream is chained separately below
       platform: "auto",
+      episodic: true,
+      semantic: true,
     });
     writeState({ lastIngest: new Date().toISOString() });
     log(
@@ -142,13 +146,43 @@ async function runDream(brain: Cortex): Promise<void> {
   log("Scheduler: starting dream cycle...");
   try {
     await brain.dream({});
-    // After dream has consolidated / reflected on memories, run a small
-    // procedural extraction pass to distill any reusable workflows.
     await runProceduralExtraction(brain);
+    // Cleanup dream-produced self_model entries that bypass MCP guardrails,
+    // then synthesize proper ones from the data.
+    await runSelfModelCleanup();
+    await runSelfModelSynthesis(brain);
     writeState({ lastDream: new Date().toISOString() });
     log("Scheduler: dream cycle complete.");
   } catch (err) {
     log("Scheduler: dream cycle failed:", String(err));
+  }
+}
+
+async function runSelfModelCleanup(): Promise<void> {
+  log("Scheduler: running self-model cleanup...");
+  try {
+    const result = await cleanupDreamSelfModel(12);
+    if (result.downgraded + result.capped > 0) {
+      log(
+        `Scheduler: self-model cleanup — ${result.downgraded} downgraded, ` +
+        `${result.capped} capped out of ${result.scanned} scanned.`
+      );
+    }
+  } catch (err) {
+    log("Scheduler: self-model cleanup failed:", String(err));
+  }
+}
+
+async function runSelfModelSynthesis(brain: Cortex): Promise<void> {
+  log("Scheduler: starting self-model synthesis...");
+  try {
+    const result = await synthesizeSelfModel(brain);
+    log(
+      `Scheduler: self-model synthesis complete. ` +
+      `${result.generated} stored, ${result.skipped} skipped.`
+    );
+  } catch (err) {
+    log("Scheduler: self-model synthesis failed:", String(err));
   }
 }
 

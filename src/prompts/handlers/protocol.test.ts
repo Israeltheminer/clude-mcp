@@ -6,18 +6,28 @@ describe("buildProtocolText", () => {
   test("interpolates turnThreshold and importanceThreshold correctly", () => {
     const text = buildProtocolText(5, 0.6);
 
-    // Verify turnThreshold
-    assert.ok(text.includes("### Every 5 conversation turns"));
-    assert.ok(text.includes("Review the last 5 turns and identify memorable moments:"));
-    assert.ok(text.includes(`Write a 2–3 sentence summary of the key facts/decisions from these 5 turns`));
+    assert.ok(text.includes("### Phase 1"));
+    assert.ok(text.includes(`limit 5, min_importance 0.6`));
+    assert.ok(text.includes("### Phase 2"));
+    assert.ok(text.includes("every 5 turns"));
+    assert.ok(text.includes(`Review the last 5 turns`));
+    assert.ok(text.includes(`key facts/decisions from these 5 turns`));
+    assert.ok(text.includes("### Phase 3"));
+    assert.ok(text.includes("### Phase 4"));
+  });
 
-    // Verify importanceThreshold
-    assert.ok(text.includes("If score >= 0.6: call store_memory with type \"episodic\""));
+  test("Phase 3 defines the self_model vs semantic boundary", () => {
+    const text = buildProtocolText(10, 0.6);
 
-    // Verify general structure exists
-    assert.ok(text.includes("### On session start"));
-    assert.ok(text.includes("**Step A — Highlights (episodic)**"));
-    assert.ok(text.includes("**Step B — Checkpoint (semantic)**"));
-    assert.ok(text.includes("### self_model — store immediately (no turn threshold)"));
+    assert.ok(text.includes("change how you BEHAVE"));
+    assert.ok(text.includes("Yes → self_model"));
+    assert.ok(text.includes("No  → semantic"));
+    assert.ok(text.includes("Meta-observations about the reflection"));
+  });
+
+  test("Phase 1 excludes self_model from recall", () => {
+    const text = buildProtocolText(10, 0.4);
+
+    assert.ok(text.includes("Never include self_model in the recall"));
   });
 });

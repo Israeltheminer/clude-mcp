@@ -23,8 +23,14 @@
  *                (3%/day). Represents "how to do things".
  *
  *   self_model — Identity, preferences, working style. Slowest decay (1%/day).
- *                Represents "who I am" — persistent beliefs about the agent
- *                or user that should survive across many sessions.
+ *                Represents "who I am / who the user is" — observations that
+ *                should change how the agent BEHAVES in future interactions.
+ *
+ *                The litmus test: "does knowing this change what I DO next time?"
+ *                  Yes → self_model  ("user verifies fixes manually" → include verification steps)
+ *                  No  → semantic    ("React doctor doesn't work with Convex" → a fact, not a behavior change)
+ *
+ *                Must be concrete and actionable. NOT meta-reflective commentary.
  *
  * ## Memory Packs (CortexV2 only)
  *
@@ -60,7 +66,13 @@ export const storeMemoryDef: Tool = {
           "episodic=events/conversations (7%/day decay), " +
           "semantic=facts/knowledge (2%/day), " +
           "procedural=how-to steps (3%/day), " +
-          "self_model=identity/preferences (1%/day, slowest).",
+          "self_model=identity/preferences (1%/day, slowest). " +
+          "self_model is ONLY for observations that change how you BEHAVE: user preferences, " +
+          "identity traits, working-style, communication expectations " +
+          "(e.g. 'user verifies fixes manually → always include verification steps'). " +
+          "Litmus test: does knowing this change what you DO next time? " +
+          "Yes → self_model. No → semantic. Facts about tools, libraries, or the world " +
+          "are semantic even if learned from the user.",
       },
       content: {
         type: "string",

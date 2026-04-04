@@ -54,6 +54,16 @@ export const ingestSessionsDef: Tool = {
         description:
           "Preview what would be processed without storing anything (default: false).",
       },
+      episodic: {
+        type: "boolean",
+        description:
+          "Store episodic memories (raw conversation windows). Default: true.",
+      },
+      semantic: {
+        type: "boolean",
+        description:
+          "Store semantic memories (LLM scoring/summarisation). Default: true.",
+      },
       reprocess: {
         type: "boolean",
         description:

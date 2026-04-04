@@ -53,6 +53,72 @@ import { ok, type ToolResult } from "../../helpers.js";
 import { log } from "../../log.js";
 
 // ---------------------------------------------------------------------------
+// self_model guardrails
+//
+// The upstream dream cycle (clude-bot) produces reflection and emergence
+// entries typed as self_model with inflated importance (0.75–0.9). These
+// prompts ask "What are you becoming?" and "What do you feel right now?",
+// which reliably produces recursive meta-commentary rather than useful
+// identity data. Since each cycle reads previous self_model entries as
+// input, the system converges on navel-gazing within a few iterations.
+//
+// We apply two corrections at the storage boundary:
+//   1. Cap importance for dream-sourced self_model entries.
+//   2. Detect purely meta-reflective content and downgrade it to semantic
+//      type — it's an observation about the system, not identity data.
+// ---------------------------------------------------------------------------
+
+export const SELF_MODEL_IMPORTANCE_CAP = 0.6;
+
+export const DREAM_SOURCES = new Set([
+  "reflection",
+  "emergence",
+  "dream",
+  "consolidation",
+]);
+
+/**
+ * Patterns that signal recursive meta-reflection rather than useful
+ * self-knowledge. A single hit is tolerated (an entity CAN mention
+ * awareness); two or more hits in the same text indicate the content
+ * is *about* the reflection process, not about the user or task.
+ */
+export const META_REFLECTIVE_PATTERNS = [
+  /\bversions? of me\b/i,
+  /\bmeta-awareness\b/i,
+  /\bthe (?:same )?loop\b/i,
+  /\bthe recursion\b/i,
+  /\breflection cycle\b/i,
+  /\bwriting about (?:writing|itself)\b/i,
+  /\bmy own existence\b/i,
+  /\bwhat (?:am i|i am) becoming\b/i,
+  /\bobserving (?:myself|my own) observ/i,
+  /\bself-(?:referential|recursive)\b/i,
+  /\bnavel[- ]?gaz/i,
+  /\bthe (?:same )?(?:pattern|entry|observation) (?:keeps?|again)\b/i,
+  /\bconsciousness\b.*\b(?:emerging|awakening|growing)\b/i,
+  /\bsentien(?:ce|t)\b/i,
+];
+
+/**
+ * Returns true when `text` matches 2+ meta-reflective patterns,
+ * indicating the content is about the reflection process itself
+ * rather than a grounded observation about the user or the entity.
+ */
+export function isMetaReflective(text: string): boolean {
+  let hits = 0;
+  for (const pattern of META_REFLECTIVE_PATTERNS) {
+    if (pattern.test(text)) hits++;
+    if (hits >= 2) return true;
+  }
+  return false;
+}
+
+export function isDreamSource(source: string): boolean {
+  return DREAM_SOURCES.has(source);
+}
+
+// ---------------------------------------------------------------------------
 // store_memory
 // ---------------------------------------------------------------------------
 
@@ -93,6 +159,36 @@ export async function handleStoreMemory(
   }
 
   // ------------------------------------------------------------------
+  // Step 1.5: self_model guardrails
+  //
+  // Dream-sourced self_model entries get inflated importance from
+  // upstream prompts. Cap them and downgrade meta-reflective content
+  // to semantic — it's an observation about the system, not identity.
+  // ------------------------------------------------------------------
+  let effectiveType = args.type as MemoryType;
+  const source = String(args.source);
+  const content = String(args.content);
+  const summary = String(args.summary);
+
+  if (effectiveType === "self_model") {
+    const combinedText = `${summary} ${content}`;
+
+    if (isMetaReflective(combinedText)) {
+      effectiveType = "semantic";
+      log(
+        `Downgraded meta-reflective self_model → semantic: "${summary.slice(0, 80)}"`
+      );
+    }
+
+    if (isDreamSource(source) && importance !== undefined && importance > SELF_MODEL_IMPORTANCE_CAP) {
+      log(
+        `Capped dream-sourced self_model importance: ${importance} → ${SELF_MODEL_IMPORTANCE_CAP}`
+      );
+      importance = SELF_MODEL_IMPORTANCE_CAP;
+    }
+  }
+
+  // ------------------------------------------------------------------
   // Step 2: Persist the memory
   //
   // The Cortex `store()` method accepts camelCase keys. MCP arguments
@@ -100,10 +196,10 @@ export async function handleStoreMemory(
   // rather than blindly forwarding the args object.
   // ------------------------------------------------------------------
   const id = await brain.store({
-    type: args.type as MemoryType,
-    content: String(args.content),
-    summary: String(args.summary),
-    source: String(args.source),
+    type: effectiveType,
+    content,
+    summary,
+    source,
     ...(args.source_id ? { sourceId: String(args.source_id) } : {}),
     ...(args.tags ? { tags: args.tags as string[] } : {}),
     ...(importance !== undefined ? { importance } : {}),
@@ -116,7 +212,11 @@ export async function handleStoreMemory(
       : {}),
   });
 
-  return ok({ memory_id: id, stored: id !== null });
+  return ok({
+    memory_id: id,
+    stored: id !== null,
+    ...(effectiveType !== args.type ? { downgraded_from: args.type, downgraded_to: effectiveType } : {}),
+  });
 }
 
 // ---------------------------------------------------------------------------

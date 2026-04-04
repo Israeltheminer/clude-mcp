@@ -32,6 +32,8 @@ export async function handleIngestSessions(
     chainDream: Boolean(args.chain_dream),
     sourcePath: args.source_path ? String(args.source_path) : undefined,
     platform: (args.platform as IngestOptions["platform"]) ?? "auto",
+    episodic: args.episodic !== false,
+    semantic: args.semantic !== false,
   };
 
   const result = await runIngestionPipeline(brain, options, (event) => {
