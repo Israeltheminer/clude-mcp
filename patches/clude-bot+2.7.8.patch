@@ -1,0 +1,33 @@
+diff --git a/node_modules/clude-bot/dist/core/memory.js b/node_modules/clude-bot/dist/core/memory.js
+index 456f204..60f641f 100644
+--- a/node_modules/clude-bot/dist/core/memory.js
++++ b/node_modules/clude-bot/dist/core/memory.js
+@@ -896,6 +896,9 @@ function scoreMemory(mem, opts) {
+     if (mem.source === 'consolidation') {
+         rawScore *= vectorSim > 0.5 ? 0.45 : 0.30;
+     }
++    if (mem.source === 'checkpoint' && process.env.CLUDE_CHECKPOINT_PENALTY !== '1') {
++        rawScore *= vectorSim > 0.5 ? 0.45 : 0.30; // demote bloated session-continuation summaries
++    }
+     return rawScore * mem.decay_factor;
+ }
+ // ---- PROGRESSIVE DISCLOSURE ---- //
+diff --git a/node_modules/clude-bot/dist/utils/constants.js b/node_modules/clude-bot/dist/utils/constants.js
+index a65d767..a18224c 100644
+--- a/node_modules/clude-bot/dist/utils/constants.js
++++ b/node_modules/clude-bot/dist/utils/constants.js
+@@ -29,10 +29,10 @@ exports.DECAY_RATES = {
+ };
+ // Memory retrieval — additive scoring (Park et al. 2023, Generative Agents)
+ exports.RECENCY_DECAY_BASE = 0.995; // Exponential: 0.995^hours since last access
+-exports.RETRIEVAL_WEIGHT_RECENCY = 1.0; // Boosted: recent memories matter more
+-exports.RETRIEVAL_WEIGHT_RELEVANCE = 2.0; // Keyword relevance (lower when vector available)
+-exports.RETRIEVAL_WEIGHT_IMPORTANCE = 2.0; // Importance stays the same
+-exports.RETRIEVAL_WEIGHT_VECTOR = 4.0; // Vector similarity dominates when available
++exports.RETRIEVAL_WEIGHT_RECENCY = parseFloat(process.env.CLUDE_W_RECENCY || "1.0"); // env-tunable (patch-package)
++exports.RETRIEVAL_WEIGHT_RELEVANCE = parseFloat(process.env.CLUDE_W_RELEVANCE || "2.0"); // env-tunable
++exports.RETRIEVAL_WEIGHT_IMPORTANCE = parseFloat(process.env.CLUDE_W_IMPORTANCE || "2.0"); // env-tunable: lower to favor relevance
++exports.RETRIEVAL_WEIGHT_VECTOR = parseFloat(process.env.CLUDE_W_VECTOR || "4.0"); // env-tunable
+ // Knowledge type boost — semantic/procedural/self_model rank higher than raw episodic
+ exports.KNOWLEDGE_TYPE_BOOST = {
+     semantic: 0.15, // Distilled knowledge gets meaningful boost
